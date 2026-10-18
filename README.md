@@ -19,6 +19,7 @@ bara ett formulär + en adapter som postar till Codicent.
 | `widget.js` | Hela widgeten. Shadow DOM, så hostens CSS varken läcker in eller ut (utom via variablerna nedan). |
 | `demo.html` | Tre embed-exempel: data-attribut, flera projekt + CSS-tema, JS-config. Körs i demo-läge utan endpoint. |
 | `index.html` | Kopia av `demo.html` så att GitHub Pages visar demon som startsida. **Håll i synk:** ändra alltid `demo.html` och kopiera sedan till `index.html` (`cp demo.html index.html`). |
+| `.nojekyll` | Tom fil: GitHub Pages ska servera filerna råa (ingen Jekyll), så att `index.html` ovan verkligen blir startsidan i stället för en renderad README. |
 | `PROMPT-claude-max.md` | Färdig snäv prompt för backend-biten i Codicent. |
 
 ## Embedda
