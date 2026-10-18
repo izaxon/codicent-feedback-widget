@@ -1,0 +1,13 @@
+{
+  "name": "codicent-feedback-widget",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Embedbar feedback/issue-widget som postar #issue-draft till Codicent",
+  "scripts": {
+    "check": "node --check widget.js",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0"
+  }
+}

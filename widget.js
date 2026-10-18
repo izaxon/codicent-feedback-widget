@@ -1,6 +1,6 @@
 /*!
- * Codicent Issue Widget — prototyp 0.2.0
- * Embedbar, vanilla JS, ingen byggkedja, inga beroenden.
+ * Codicent Issue Widget — prototyp 0.3.0
+ * Embedbar, vanilla JS (ES2017+), ingen byggkedja, inga beroenden.
  *
  * Skickar INTE till GitHub. Skickar ett meddelande till Codicent
  * som #issue-draft, för granskning/transform därifrån.
@@ -14,9 +14,76 @@
 (function (global) {
   'use strict';
 
-  var VERSION = '0.2.0';
+  if (typeof document === 'undefined') return;
+  if (global.CodicentIssueWidget && global.CodicentIssueWidget.version) return; // redan laddad
+
+  var VERSION = '0.3.0';
   var MAX_AUDIO_SECONDS = 120; // 2 min — backend ska också kontrollera detta
   var SPEECH_LANG = 'sv-SE';
+  var LOG = '[codicent-issue-widget] ';
+  // Måste läsas medan skriptet körs; är null för async/dynamiskt laddade skript.
+  var loaderScript = document.currentScript;
+
+  // ---------------------------------------------------------------------------
+  // TEXTER — alla strängar som visas för besökaren. Skriv över enskilda nycklar
+  // med config.messages (t.ex. för en annan språkversion). {x} byts mot värden.
+  // ---------------------------------------------------------------------------
+  var MESSAGES = {
+    openButton: 'Rapportera ett problem',
+    dialogTitle: 'Rapportera ett problem',
+    project: 'Projekt',
+    titleLabel: 'Titel',
+    optional: '(valfri)',
+    titlePlaceholder: 'Kort sammanfattning',
+    bodyLabel: 'Beskrivning',
+    bodyPlaceholder: 'Vad är fel? Vad förväntade du dig?',
+    draftHint: 'Sparas som utkast (#issue-draft) i Codicent och granskas innan det blir ett GitHub-issue.',
+    audioLabel: 'Ljudinspelning',
+    audioOptional: '(valfri, max 2 min)',
+    record: '● Spela in ljud',
+    recordAgain: '● Spela in igen',
+    stopRecording: '⏹ Stoppa inspelning',
+    audioNone: 'Inget ljud inspelat. Mikrofonen används först när du trycker på Spela in.',
+    audioUnsupported: 'Ljudinspelning stöds inte i den här webbläsaren — skriv i stället (eller använd valfri röstifyllning nedan).',
+    audioInsecure: 'Ljudinspelning kräver en säker anslutning (https) — skriv i stället.',
+    micDenied: 'Mikrofonen nekades eller är inte tillgänglig. Du kan skriva beskrivningen i stället.',
+    micDeniedStatus: 'Inget ljud spelades in — skriv i stället, det går lika bra.',
+    recorderFailed: 'Kunde inte starta inspelningen i den här webbläsaren.',
+    recorderError: 'Inspelningen avbröts av ett fel. Försök igen eller skriv i stället.',
+    recording: 'Spelar in… {elapsed} / {max}',
+    recordingDone: 'Inspelning klar ({elapsed} / {max}).',
+    recordingEmpty: 'Ingen ljuddata spelades in. Försök igen.',
+    attached: 'Bifogat ljud: {name} · {time} · {kb} KB — lyssna gärna innan du skickar.',
+    audioDelete: 'Ta bort ljud / spela in igen',
+    audioHint: 'Ljudet bifogas rapporten och sparas i Codicent, där det kan transkriberas senare. Det är ljudfilen som gäller — inte webbläsarens text.',
+    speechStart: '🎙 Fyll i text med röst (valfritt)',
+    speechStop: '⏹ Stoppa',
+    speechHint: 'Valfri bekvämlighet: webbläsarens taligenkänning fyller i textfältet. Inte sanningskälla.',
+    speechError: 'Röstinmatning misslyckades ({error}). Skriv i stället.',
+    speechFailed: 'Kunde inte starta röstinmatning.',
+    stopRecordingFirst: 'Stoppa ljudinspelningen först.',
+    stopSpeechFirst: 'Stoppa röstifyllningen först.',
+    stopBeforeSend: 'Stoppa inspelningen innan du skickar.',
+    finalizing: 'Ljudet bearbetas — försök igen om ett ögonblick.',
+    needInput: 'Skriv en beskrivning eller spela in ljud.',
+    voiceReportTitle: 'Röstinspelad rapport',
+    send: 'Skicka som utkast',
+    cancel: 'Avbryt',
+    sending: 'Skickar…',
+    sentDemo: 'Demo-läge: inget skickades. Meddelandet loggades i konsolen.',
+    sentOk: 'Tack! Utkastet är sparat i Codicent (#issue-draft #{project}).',
+    done: 'Stäng',
+    another: 'Skicka en till',
+    failed: 'Kunde inte skicka: {error}. Försök igen om en stund.',
+    notConfigured: 'Rapportering är inte konfigurerad (endpoint saknas)',
+    draftRestored: 'Ditt tidigare, ej skickade utkast har återställts.'
+  };
+
+  function format(text, vars) {
+    return String(text).replace(/\{(\w+)\}/g, function (m, k) {
+      return vars && vars[k] !== undefined ? vars[k] : m;
+    });
+  }
 
   // ---------------------------------------------------------------------------
   // ADAPTER — byt bara här när Codicent kopplar rätt API.
@@ -49,7 +116,10 @@
       mimeType: audio.blob.type || 'audio/webm', durationSec: audio.durationSec
     } : null;
     if (!config.endpoint) {
-      console.info('[codicent-issue-widget] DEMO — skulle ha skickat:\n' + messageText +
+      // Demo-läge måste väljas uttryckligen. En saknad endpoint i produktion
+      // (t.ex. misslyckad injicering av config) ska aldrig se ut som lyckat skick.
+      if (config.demo !== true) throw new Error(config.messages.notConfigured);
+      console.info(LOG + 'DEMO — skulle ha skickat:\n' + messageText +
         (audioMeta ? '\n[ljud skulle bifogas som multipart-fält "audio": ' + audioMeta.filename + ', ' + audioMeta.size + ' byte]' : ''));
       return { ok: true, demo: true, messageText: messageText, audio: audioMeta };
     }
@@ -73,11 +143,26 @@
         body: JSON.stringify({ project: payload.project, tags: ['issue-draft', payload.project], text: messageText, payload: payload })
       };
     }
-    var response = await fetch(config.endpoint, fetchOptions);
+    var controller = typeof AbortController === 'function' ? new AbortController() : null;
+    var timeoutMs = Number(config.timeoutMs) > 0 ? Number(config.timeoutMs) : 30000;
+    var timer = null;
+    if (controller) {
+      fetchOptions.signal = controller.signal;
+      timer = setTimeout(function () { controller.abort(); }, timeoutMs);
+    }
+    var response;
+    try {
+      response = await fetch(config.endpoint, fetchOptions);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
     if (!response.ok) throw new Error('Codicent svarade ' + response.status);
     var data = null;
-    try { data = await response.json(); } catch (e) { /* tomt svar är ok */ }
-    return { ok: true, id: data && (data.id || data.messageId), messageText: messageText, audio: audioMeta };
+    try { data = await response.json(); } catch (e) { /* hanteras nedan */ }
+    // En 2xx utan JSON-id är inte ett sparat utkast (t.ex. en proxy- eller SPA-sida som svarar 200).
+    var id = data && (data.id || data.messageId);
+    if (!id) throw new Error('Oväntat svar från Codicent (inget id)');
+    return { ok: true, id: id, messageText: messageText, audio: audioMeta };
   }
   // ------------------------- slut ADAPTER ------------------------------------
 
@@ -87,65 +172,105 @@
     return list.map(function (p) { return String(p).trim().replace(/^#/, ''); }).filter(Boolean);
   }
 
-  function parseScriptConfig() {
-    var script = document.currentScript;
-    if (!script) {
-      var scripts = document.querySelectorAll('script[data-project],script[data-codicent-project]');
-      script = scripts[scripts.length - 1];
-    }
-    if (!script) return {};
-    var d = script.dataset || {};
-    return {
-      project: d.project || d.codicentProject || '',
-      projects: d.projects || '',
-      endpoint: d.endpoint || '',
-      apiKey: d.apiKey || '', // nyckelvärdet injiceras av hosten; registrerat med #api-key i Codicent, se README
-      mount: d.mount || '',
-      buttonText: d.buttonText || '',
-      allowProjectSwitch: d.allowProjectSwitch === 'true'
-    };
+  // Tar bort undefined/null/tomma strängar så att ett tomt värde aldrig skriver över ett satt.
+  function prune(obj) {
+    var out = {};
+    Object.keys(obj || {}).forEach(function (k) {
+      var v = obj[k];
+      if (v !== undefined && v !== null && v !== '') out[k] = v;
+    });
+    return out;
   }
 
+  function readDataset(el) {
+    var d = (el && el.dataset) || {};
+    return prune({
+      project: d.project || d.codicentProject,
+      projects: d.projects,
+      endpoint: d.endpoint,
+      apiKey: d.apiKey, // nyckelvärdet injiceras av hosten; registrerat med #api-key i Codicent, se README
+      buttonText: d.buttonText,
+      allowProjectSwitch: d.allowProjectSwitch === undefined ? undefined : d.allowProjectSwitch === 'true',
+      demo: d.demo === undefined ? undefined : d.demo === 'true',
+      timeoutMs: d.timeoutMs
+    });
+  }
+
+  // Standardvärden från <script src="widget.js" data-…>. Skapar ingen widget själv.
+  function parseScriptConfig() {
+    return loaderScript ? readDataset(loaderScript) : {};
+  }
+
+  // CSS-variablerna har bara fallback-värden (inget `:host{--ciw-…}`), så att de
+  // går att sätta på valfri förfader till widgeten — inte bara på mount-elementet.
   var STYLES = [
-    ':host{--ciw-accent:#2563eb;--ciw-bg:#fff;--ciw-panel-bg:#fff;--ciw-text:#111827;--ciw-muted:#6b7280;',
-    '--ciw-border:#d1d5db;--ciw-radius:12px;--ciw-font:system-ui,-apple-system,"Segoe UI",sans-serif;',
-    '--ciw-button-bg:var(--ciw-accent);--ciw-button-text:#fff;font-family:var(--ciw-font);color:var(--ciw-text)}',
-    '*{box-sizing:border-box}',
-    '.ciw-btn{background:var(--ciw-button-bg);color:var(--ciw-button-text);border:0;border-radius:var(--ciw-radius);',
-    'padding:.55rem 1rem;font:inherit;cursor:pointer}',
+    ':host{font-family:var(--ciw-font,system-ui,-apple-system,"Segoe UI",sans-serif);color:var(--ciw-text,#111827)}',
+    '*{box-sizing:border-box}[hidden]{display:none!important}',
+    '.ciw-btn{background:var(--ciw-button-bg,var(--ciw-accent,#2563eb));color:var(--ciw-button-text,#fff);border:0;',
+    'border-radius:var(--ciw-radius,12px);padding:.55rem 1rem;font:inherit;cursor:pointer}',
     '.ciw-btn[disabled]{opacity:.6;cursor:wait}',
-    '.ciw-btn-secondary{background:transparent;color:var(--ciw-text);border:1px solid var(--ciw-border)}',
-    '.ciw-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;justify-content:center;z-index:9999}',
+    '.ciw-btn-secondary{background:transparent;color:var(--ciw-text,#111827);border:1px solid var(--ciw-border,#d1d5db)}',
+    '.ciw-btn:focus-visible,.ciw-field input:focus-visible,.ciw-field textarea:focus-visible,.ciw-field select:focus-visible{',
+    'outline:2px solid var(--ciw-accent,#2563eb);outline-offset:2px}',
+    '.ciw-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;justify-content:center;z-index:2147483000}',
     '@media(min-width:640px){.ciw-overlay{align-items:center}}',
-    '.ciw-panel{background:var(--ciw-panel-bg);width:min(520px,100%);max-height:92vh;overflow:auto;',
-    'border-radius:var(--ciw-radius);padding:1rem 1.25rem 1.25rem;box-shadow:0 20px 50px rgba(0,0,0,.25)}',
+    '.ciw-panel{background:var(--ciw-panel-bg,#fff);color:var(--ciw-text,#111827);width:min(520px,100%);max-height:92vh;max-height:92dvh;overflow:auto;',
+    // Pill-radie (999px) på knappar är avsiktligt, men panelen får aldrig bli en oval som klipper innehållet.
+    'border-radius:min(var(--ciw-radius,12px),24px);padding:1rem 1.25rem 1.25rem;box-shadow:0 20px 50px rgba(0,0,0,.25)}',
     '.ciw-panel h2{margin:.2rem 0 .75rem;font-size:1.1rem}',
-    '.ciw-field{margin:.75rem 0}.ciw-field label{display:block;font-weight:600;margin-bottom:.3rem;font-size:.9rem}',
-    '.ciw-field input,.ciw-field textarea,.ciw-field select{width:100%;padding:.55rem;border:1px solid var(--ciw-border);',
-    'border-radius:calc(var(--ciw-radius) * .66);font:inherit;background:var(--ciw-bg);color:var(--ciw-text)}',
+    '.ciw-field{margin:.75rem 0}.ciw-field label,.ciw-label{display:block;font-weight:600;margin-bottom:.3rem;font-size:.9rem}',
+    '.ciw-field input,.ciw-field textarea,.ciw-field select{width:100%;padding:.55rem;border:1px solid var(--ciw-border,#d1d5db);',
+    'border-radius:min(calc(var(--ciw-radius,12px) * .66),16px);font:inherit;background:var(--ciw-bg,var(--ciw-panel-bg,#fff));color:var(--ciw-text,#111827)}',
     '.ciw-field textarea{min-height:120px;resize:vertical}',
-    '.ciw-hint{color:var(--ciw-muted);font-size:.82rem;margin-top:.25rem}',
+    '.ciw-hint{color:var(--ciw-muted,#6b7280);font-size:.82rem;margin-top:.25rem}',
     '.ciw-row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:1rem}',
     '.ciw-status{margin-top:.75rem;font-size:.9rem}.ciw-status.ok{color:#15803d}.ciw-status.err{color:#b91c1c}',
     '.ciw-rec.recording,.ciw-record.recording{background:#b91c1c;color:#fff;border-color:#b91c1c}',
     '.ciw-audio{margin-top:.5rem}.ciw-audio audio{width:100%;margin:.35rem 0}',
-    '.ciw-audio-name{font-size:.85rem;color:var(--ciw-muted);word-break:break-all}'
+    '.ciw-audio-name{font-size:.85rem;color:var(--ciw-muted,#6b7280);word-break:break-all}',
+    '.ciw-done p{margin:.5rem 0}'
   ].join('');
 
+  var instances = new WeakMap(); // mount-element -> widget (init är idempotent per element)
+  var scrollLocks = 0, scrollPrev = '';
+  function lockScroll() {
+    if (scrollLocks++ === 0) { scrollPrev = document.body.style.overflow; document.body.style.overflow = 'hidden'; }
+  }
+  function unlockScroll() {
+    if (scrollLocks > 0 && --scrollLocks === 0) document.body.style.overflow = scrollPrev;
+  }
+
   function createWidget(userConfig) {
-    var scriptConfig = parseScriptConfig();
-    var config = Object.assign({}, scriptConfig, userConfig || {});
+    var config = Object.assign({}, parseScriptConfig(), prune(userConfig));
+    config.messages = Object.assign({}, MESSAGES, userConfig && userConfig.messages);
+    var T = function (key, vars) { return format(config.messages[key] !== undefined ? config.messages[key] : key, vars); };
     var projects = normalizeProjects(config);
-    if (!projects.length) projects = ['nextphase'];
+    if (!projects.length) {
+      console.error(LOG + 'Inget projekt angivet (project / projects / data-project) — widgeten startades inte.');
+      return null;
+    }
 
     var host = null;
-    if (config.mount) host = typeof config.mount === 'string' ? document.querySelector(config.mount) : config.mount;
+    if (config.mount) {
+      host = typeof config.mount === 'string' ? document.querySelector(config.mount) : config.mount;
+      if (!host) console.warn(LOG + 'mount "' + config.mount + '" hittades inte — monterar sist på sidan.');
+    }
+    if (host && instances.has(host)) return instances.get(host);
+    var autoCreated = false;
     if (!host) {
       host = document.createElement('div');
       host.setAttribute('data-codicent-issue-widget-instance', '');
       document.body.appendChild(host);
+      autoCreated = true;
     }
-    var root = host.attachShadow ? host.attachShadow({ mode: 'open' }) : host;
+    if (!host.attachShadow) {
+      console.error(LOG + 'Webbläsaren saknar Shadow DOM — widgeten startades inte.');
+      return null;
+    }
+    // Egen skal-div: mount-elementets barn och dess eventuella shadow-root rörs inte.
+    var shell = document.createElement('div');
+    host.appendChild(shell);
+    var root = shell.attachShadow({ mode: 'open' });
 
     var style = document.createElement('style');
     style.textContent = STYLES;
@@ -154,201 +279,312 @@
     var openBtn = document.createElement('button');
     openBtn.type = 'button';
     openBtn.className = 'ciw-btn ciw-open';
-    openBtn.textContent = config.buttonText || 'Rapportera ett problem';
+    openBtn.textContent = config.buttonText || T('openButton');
     root.appendChild(openBtn);
 
-    var overlay = null;
-    var recognition = null;
-    var overlayCleanup = null;
-    var lastSubmitAt = 0;
-
-    function close() {
-      if (overlayCleanup) { try { overlayCleanup(); } catch (e) {} overlayCleanup = null; }
-      stopVoice();
-      if (overlay) { overlay.remove(); overlay = null; }
-      openBtn.focus();
+    if (!config.endpoint && config.demo !== true) {
+      console.error(LOG + 'Ingen endpoint konfigurerad. Sätt endpoint, eller demo: true för att prova utan nätverk.');
     }
 
-    function stopVoice() {
-      if (recognition) { try { recognition.stop(); } catch (e) {} recognition = null; }
+    var overlay = null;
+    var disposeOverlay = null;
+    var draft = null; // { project, title, body, audio } — överlever stäng/öppna tills det skickats
+    var destroyed = false;
+
+    function close(discard) {
+      if (!overlay) return;
+      if (disposeOverlay) { try { disposeOverlay(discard === true); } catch (e) { /* ignore */ } disposeOverlay = null; }
+      overlay.remove(); overlay = null;
+      unlockScroll();
+      if (!destroyed) openBtn.focus();
     }
 
     function open() {
+      if (overlay || destroyed) return;
       overlay = document.createElement('div');
       overlay.className = 'ciw-overlay';
       var projectField = '';
-      if (projects.length > 1 && config.allowProjectSwitch !== false) {
+      if (projects.length > 1 && config.allowProjectSwitch === true) {
         var options = projects.map(function (p) {
           return '<option value="' + escapeHtml(p) + '"' + (p === projects[0] ? ' selected' : '') + '>#' + escapeHtml(p) + '</option>';
         }).join('');
-        projectField = '<div class="ciw-field"><label for="ciw-project">Projekt</label><select id="ciw-project">' + options + '</select></div>';
+        projectField = '<div class="ciw-field"><label for="ciw-project">' + escapeHtml(T('project')) + '</label><select id="ciw-project">' + options + '</select></div>';
       } else {
-        projectField = '<div class="ciw-field"><label>Projekt</label><div>#' + escapeHtml(projects[0]) + '</div>' +
+        projectField = '<div class="ciw-field"><div class="ciw-label" id="ciw-project-label">' + escapeHtml(T('project')) + '</div>' +
+          '<div aria-labelledby="ciw-project-label">#' + escapeHtml(projects[0]) + '</div>' +
           '<input type="hidden" id="ciw-project" value="' + escapeHtml(projects[0]) + '"></div>';
       }
 
       overlay.innerHTML =
         '<div class="ciw-panel" role="dialog" aria-modal="true" aria-labelledby="ciw-title">' +
-        '<h2 id="ciw-title">Rapportera ett problem</h2>' +
+        '<h2 id="ciw-title">' + escapeHtml(T('dialogTitle')) + '</h2>' +
+        '<div class="ciw-form">' +
         projectField +
-        '<div class="ciw-field"><label for="ciw-title-input">Titel <span class="ciw-hint">(valfri)</span></label>' +
-        '<input id="ciw-title-input" type="text" maxlength="200" placeholder="Kort sammanfattning"></div>' +
-        '<div class="ciw-field"><label for="ciw-body">Beskrivning</label>' +
-        '<textarea id="ciw-body" required placeholder="Vad är fel? Vad förväntade du dig?"></textarea>' +
-        '<div class="ciw-hint">Sparas som utkast (#issue-draft) i Codicent och granskas innan det blir ett GitHub-issue.</div></div>' +
-        '<div class="ciw-field"><label>Ljudinspelning <span class="ciw-hint">(valfri, max 2 min)</span></label>' +
+        '<div class="ciw-field"><label for="ciw-title-input">' + escapeHtml(T('titleLabel')) + ' <span class="ciw-hint">' + escapeHtml(T('optional')) + '</span></label>' +
+        '<input id="ciw-title-input" type="text" maxlength="200" placeholder="' + escapeHtml(T('titlePlaceholder')) + '"></div>' +
+        '<div class="ciw-field"><label for="ciw-body">' + escapeHtml(T('bodyLabel')) + '</label>' +
+        '<textarea id="ciw-body" placeholder="' + escapeHtml(T('bodyPlaceholder')) + '"></textarea>' +
+        '<div class="ciw-hint">' + escapeHtml(T('draftHint')) + '</div></div>' +
+        '<div class="ciw-field" role="group" aria-labelledby="ciw-audio-label"><div class="ciw-label" id="ciw-audio-label">' + escapeHtml(T('audioLabel')) + ' <span class="ciw-hint">' + escapeHtml(T('audioOptional')) + '</span></div>' +
         '<div class="ciw-row" style="margin-top:0">' +
-        '<button type="button" class="ciw-btn ciw-btn-secondary ciw-record">● Spela in ljud</button>' +
-        '<span class="ciw-hint ciw-audio-status">Inget ljud inspelat. Mikrofonen används först när du trycker på Spela in.</span></div>' +
+        '<button type="button" class="ciw-btn ciw-btn-secondary ciw-record">' + escapeHtml(T('record')) + '</button>' +
+        '<span class="ciw-hint ciw-audio-status"></span></div>' +
         '<div class="ciw-audio" hidden><audio class="ciw-audio-preview" controls></audio>' +
         '<div class="ciw-audio-name"></div>' +
-        '<div class="ciw-row"><button type="button" class="ciw-btn ciw-btn-secondary ciw-audio-delete">Ta bort ljud / spela in igen</button></div></div>' +
-        '<div class="ciw-hint">Ljudet bifogas rapporten och sparas i Codicent, där det kan transkriberas senare. Det är ljudfilen som gäller — inte webbläsarens text.</div></div>' +
-        '<div class="ciw-row">' +
-        '<button type="button" class="ciw-btn ciw-rec" hidden>🎙 Fyll i text med röst (valfritt)</button>' +
-        '<span class="ciw-hint ciw-rec-hint" hidden>Valfri bekvämlighet: webbläsarens taligenkänning fyller i textfältet. Inte sanningskälla.</span></div>' +
-        '<div class="ciw-row"><button type="button" class="ciw-btn ciw-send">Skicka som utkast</button>' +
-        '<button type="button" class="ciw-btn ciw-btn-secondary ciw-cancel">Avbryt</button></div>' +
-        '<div class="ciw-status" role="status" aria-live="polite"></div></div>';
+        '<div class="ciw-row"><button type="button" class="ciw-btn ciw-btn-secondary ciw-audio-delete">' + escapeHtml(T('audioDelete')) + '</button></div></div>' +
+        '<div class="ciw-hint">' + escapeHtml(T('audioHint')) + '</div></div>' +
+        '<div class="ciw-row ciw-speech-row" hidden>' +
+        '<button type="button" class="ciw-btn ciw-rec">' + escapeHtml(T('speechStart')) + '</button>' +
+        '<span class="ciw-hint">' + escapeHtml(T('speechHint')) + '</span></div>' +
+        '<div class="ciw-row"><button type="button" class="ciw-btn ciw-send">' + escapeHtml(T('send')) + '</button>' +
+        '<button type="button" class="ciw-btn ciw-btn-secondary ciw-cancel">' + escapeHtml(T('cancel')) + '</button></div>' +
+        '<div class="ciw-status" role="status" aria-live="polite"></div></div>' +
+        '<div class="ciw-done" hidden><p class="ciw-done-text" role="status"></p>' +
+        '<div class="ciw-row"><button type="button" class="ciw-btn ciw-another">' + escapeHtml(T('another')) + '</button>' +
+        '<button type="button" class="ciw-btn ciw-btn-secondary ciw-close">' + escapeHtml(T('done')) + '</button></div></div></div>';
 
       root.appendChild(overlay);
+      lockScroll();
+      var thisOverlay = overlay;
+      var disposed = false;
       var panel = overlay.querySelector('.ciw-panel');
+      var formEl = overlay.querySelector('.ciw-form');
+      var doneEl = overlay.querySelector('.ciw-done');
+      var projectEl = overlay.querySelector('#ciw-project');
+      var titleEl = overlay.querySelector('#ciw-title-input');
       var bodyEl = overlay.querySelector('#ciw-body');
       var statusEl = overlay.querySelector('.ciw-status');
-      overlay.addEventListener('click', function (e) { if (e.target === overlay) close(); });
-      overlay.querySelector('.ciw-cancel').addEventListener('click', close);
-      document.addEventListener('keydown', onKey);
-      function onKey(e) { if (e.key === 'Escape') { document.removeEventListener('keydown', onKey); close(); } }
-
-      // --- Ljudinspelning: MediaRecorder (sanningskällan är ljudfilen) ---
-      var mediaRecorder = null, mediaStream = null, audioChunks = [];
-      var audioBlob = null, audioUrl = null, audioFilename = '', audioDurationSec = 0;
-      var recordTimer = null, recordStartedAt = 0;
-      var recordBtn = overlay.querySelector('.ciw-record');
-      var audioStatus = overlay.querySelector('.ciw-audio-status');
-      var audioBox = overlay.querySelector('.ciw-audio');
-      var audioPreview = overlay.querySelector('.ciw-audio-preview');
-      var audioName = overlay.querySelector('.ciw-audio-name');
-
-      function fmtTime(sec) {
-        sec = Math.max(0, Math.floor(sec));
-        return Math.floor(sec / 60) + ':' + ('0' + (sec % 60)).slice(-2);
-      }
-      function stopTracks() {
-        if (mediaStream) { mediaStream.getTracks().forEach(function (t) { t.stop(); }); mediaStream = null; }
-      }
-      function clearAudio() {
-        if (audioUrl) { try { URL.revokeObjectURL(audioUrl); } catch (e) {} audioUrl = null; }
-        audioBlob = null; audioFilename = ''; audioDurationSec = 0; audioChunks = [];
-        audioPreview.removeAttribute('src'); audioBox.hidden = true;
-        audioStatus.textContent = 'Inget ljud inspelat. Mikrofonen används först när du trycker på Spela in.';
-        recordBtn.textContent = '● Spela in ljud'; recordBtn.classList.remove('recording');
-      }
-      function stopRecording() {
-        if (recordTimer) { clearInterval(recordTimer); recordTimer = null; }
-        if (mediaRecorder && mediaRecorder.state !== 'inactive') { try { mediaRecorder.stop(); } catch (e) {} }
-        recordBtn.textContent = '● Spela in ljud'; recordBtn.classList.remove('recording');
-      }
-      overlayCleanup = function () {
-        if (recordTimer) { clearInterval(recordTimer); recordTimer = null; }
-        if (mediaRecorder && mediaRecorder.state !== 'inactive') { try { mediaRecorder.stop(); } catch (e) {} }
-        stopTracks();
-        if (audioUrl) { try { URL.revokeObjectURL(audioUrl); } catch (e) {} }
-      };
-      overlay.querySelector('.ciw-audio-delete').addEventListener('click', clearAudio);
-
-      if (!global.MediaRecorder || !(global.navigator && navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
-        recordBtn.disabled = true;
-        audioStatus.textContent = 'Ljudinspelning stöds inte i den här webbläsaren — skriv i stället (eller använd valfri röstifyllning nedan).';
-      } else {
-        recordBtn.addEventListener('click', async function () {
-          if (mediaRecorder && mediaRecorder.state === 'recording') { stopRecording(); return; }
-          clearAudio(); // ny inspelning ersätter gammal
-          var stream;
-          try {
-            // Mikrofonbehörighet begärs FÖRST här, vid knapptryck.
-            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          } catch (e) {
-            audioStatus.textContent = 'Mikrofonen nekades eller är inte tillgänglig. Du kan skriva beskrivningen i stället.';
-            setStatus('Inget ljud spelades in — skriv i stället, det går lika bra.', false);
-            return;
-          }
-          mediaStream = stream; audioChunks = [];
-          try { mediaRecorder = new MediaRecorder(stream); }
-          catch (e) { stopTracks(); audioStatus.textContent = 'Kunde inte starta inspelningen i den här webbläsaren.'; return; }
-          mediaRecorder.ondataavailable = function (e) { if (e.data && e.data.size) audioChunks.push(e.data); };
-          mediaRecorder.onstop = function () {
-            if (recordTimer) { clearInterval(recordTimer); recordTimer = null; }
-            stopTracks();
-            if (!audioChunks.length) return;
-            var mime = (mediaRecorder && mediaRecorder.mimeType) || 'audio/webm';
-            audioBlob = new Blob(audioChunks, { type: mime });
-            var ext = mime.indexOf('ogg') >= 0 ? 'ogg' : (mime.indexOf('mp4') >= 0 || mime.indexOf('m4a') >= 0 ? 'm4a' : 'webm');
-            audioFilename = 'issue-voice-' + new Date().toISOString().replace(/[:.]/g, '-') + '.' + ext;
-            audioDurationSec = Math.min(MAX_AUDIO_SECONDS, Math.round((Date.now() - recordStartedAt) / 1000));
-            audioUrl = URL.createObjectURL(audioBlob);
-            audioPreview.src = audioUrl;
-            audioName.textContent = 'Bifogat ljud: ' + audioFilename + ' · ' + fmtTime(audioDurationSec) + ' · ' + Math.round(audioBlob.size / 1024) + ' KB — lyssna gärna innan du skickar.';
-            audioBox.hidden = false;
-            audioStatus.textContent = 'Inspelning klar (' + fmtTime(audioDurationSec) + ' / ' + fmtTime(MAX_AUDIO_SECONDS) + ').';
-            recordBtn.textContent = '● Spela in igen';
-          };
-          recordStartedAt = Date.now();
-          mediaRecorder.start();
-          recordBtn.textContent = '⏹ Stoppa inspelning'; recordBtn.classList.add('recording');
-          audioStatus.textContent = 'Spelar in… 0:00 / ' + fmtTime(MAX_AUDIO_SECONDS);
-          recordTimer = setInterval(function () {
-            var elapsed = (Date.now() - recordStartedAt) / 1000;
-            audioStatus.textContent = 'Spelar in… ' + fmtTime(elapsed) + ' / ' + fmtTime(MAX_AUDIO_SECONDS);
-            if (elapsed >= MAX_AUDIO_SECONDS) stopRecording(); // hård gräns 2 min
-          }, 250);
-        });
-      }
-
-      // Röstinspelning: Web Speech API, sv-SE, när det stöds.
-      var SpeechRecognition = global.SpeechRecognition || global.webkitSpeechRecognition;
-      var recBtn = overlay.querySelector('.ciw-rec');
-      var recHint = overlay.querySelector('.ciw-rec-hint');
-      if (SpeechRecognition) {
-        recBtn.hidden = false; recHint.hidden = false;
-        recBtn.addEventListener('click', function () {
-          if (recognition) { stopVoice(); recBtn.classList.remove('recording'); recBtn.textContent = '🎙 Fyll i text med röst (valfritt)'; return; }
-          recognition = new SpeechRecognition();
-          recognition.lang = SPEECH_LANG;
-          recognition.interimResults = true;
-          recognition.continuous = false;
-          var base = bodyEl.value ? bodyEl.value.replace(/\s+$/, '') + ' ' : '';
-          recognition.onresult = function (event) {
-            var text = '';
-            for (var i = 0; i < event.results.length; i++) text += event.results[i][0].transcript;
-            bodyEl.value = base + text;
-          };
-          recognition.onerror = function (event) {
-            setStatus('Röstinmatning misslyckades (' + event.error + '). Skriv i stället.', false);
-            recBtn.classList.remove('recording'); recBtn.textContent = '🎙 Fyll i text med röst (valfritt)'; recognition = null;
-          };
-          recognition.onend = function () {
-            recBtn.classList.remove('recording'); recBtn.textContent = '🎙 Fyll i text med röst (valfritt)'; recognition = null;
-          };
-          try { recognition.start(); recBtn.classList.add('recording'); recBtn.textContent = '⏹ Stoppa'; }
-          catch (e) { setStatus('Kunde inte starta röstinmatning.', false); }
-        });
-      }
+      var sendBtn = overlay.querySelector('.ciw-send');
+      var sent = false;
 
       function setStatus(text, ok) {
         statusEl.textContent = text;
         statusEl.className = 'ciw-status ' + (ok ? 'ok' : 'err');
       }
 
-      overlay.querySelector('.ciw-send').addEventListener('click', async function () {
-        var now = Date.now();
-        if (now - lastSubmitAt < 10000) { setStatus('Vänta några sekunder innan du skickar igen.', false); return; }
-        if (mediaRecorder && mediaRecorder.state === 'recording') { setStatus('Stoppa inspelningen innan du skickar.', false); return; }
-        var projectEl = overlay.querySelector('#ciw-project');
+      // --- Stäng: bakgrund (bara om både tryck och släpp skedde där), Escape, Avbryt ---
+      var downOnBackdrop = false;
+      overlay.addEventListener('pointerdown', function (e) { downOnBackdrop = e.target === thisOverlay; });
+      overlay.addEventListener('click', function (e) {
+        if (e.target === thisOverlay && downOnBackdrop) close(); // bevarar utkastet
+        downOnBackdrop = false;
+      });
+      overlay.querySelector('.ciw-cancel').addEventListener('click', function () { close(true); });
+      overlay.querySelector('.ciw-close').addEventListener('click', function () { close(true); });
+
+      function focusables() {
+        return Array.prototype.filter.call(
+          panel.querySelectorAll('button,input:not([type=hidden]),textarea,select,audio[controls]'),
+          function (el) { return !el.disabled && el.getClientRects().length > 0; }
+        );
+      }
+      function onKey(e) {
+        if (e.key === 'Escape') { e.stopPropagation(); close(); return; }
+        if (e.key !== 'Tab') return;
+        var list = focusables();
+        if (!list.length) return;
+        var active = root.activeElement;
+        var idx = list.indexOf(active);
+        if (e.shiftKey && (idx <= 0)) { e.preventDefault(); list[list.length - 1].focus(); }
+        else if (!e.shiftKey && (idx === -1 || idx === list.length - 1)) { e.preventDefault(); list[0].focus(); }
+      }
+      document.addEventListener('keydown', onKey, true);
+
+      // --- Ljudinspelning: MediaRecorder (sanningskällan är ljudfilen) ---
+      var mediaRecorder = null, mediaStream = null, audioChunks = [];
+      var audioBlob = null, audioUrl = null, audioFilename = '', audioDurationSec = 0;
+      var recordTimer = null, hardStopTimer = null, recordStartedAt = 0, recordStoppedAt = 0;
+      var requestingMic = false, finalizing = false;
+      var recognition = null;
+      var recordBtn = overlay.querySelector('.ciw-record');
+      var audioStatus = overlay.querySelector('.ciw-audio-status');
+      var audioBox = overlay.querySelector('.ciw-audio');
+      var audioPreview = overlay.querySelector('.ciw-audio-preview');
+      var audioName = overlay.querySelector('.ciw-audio-name');
+      var maxLabel = fmtTime(MAX_AUDIO_SECONDS);
+
+      function fmtTime(sec) {
+        sec = Math.max(0, Math.floor(sec));
+        return Math.floor(sec / 60) + ':' + ('0' + (sec % 60)).slice(-2);
+      }
+      function isRecording() { return !!(mediaRecorder && mediaRecorder.state === 'recording'); }
+      function stopTracks() {
+        if (mediaStream) { mediaStream.getTracks().forEach(function (t) { t.stop(); }); mediaStream = null; }
+      }
+      function clearTimers() {
+        if (recordTimer) { clearInterval(recordTimer); recordTimer = null; }
+        if (hardStopTimer) { clearTimeout(hardStopTimer); hardStopTimer = null; }
+      }
+      function revokeAudioUrl() {
+        if (audioUrl) { try { URL.revokeObjectURL(audioUrl); } catch (e) { /* ignore */ } audioUrl = null; }
+      }
+      function showAudio() {
+        revokeAudioUrl();
+        audioUrl = URL.createObjectURL(audioBlob);
+        audioPreview.src = audioUrl;
+        audioName.textContent = T('attached', { name: audioFilename, time: fmtTime(audioDurationSec), kb: Math.round(audioBlob.size / 1024) });
+        audioBox.hidden = false;
+        audioStatus.textContent = T('recordingDone', { elapsed: fmtTime(audioDurationSec), max: maxLabel });
+        recordBtn.textContent = T('recordAgain');
+      }
+      function clearAudio() {
+        revokeAudioUrl();
+        audioBlob = null; audioFilename = ''; audioDurationSec = 0; audioChunks = [];
+        audioPreview.removeAttribute('src'); audioBox.hidden = true;
+        audioStatus.textContent = T('audioNone');
+        recordBtn.textContent = T('record'); recordBtn.classList.remove('recording');
+      }
+      function stopRecording() {
+        clearTimers();
+        if (isRecording()) {
+          finalizing = true; // onstop levereras asynkront — blobben finns först då
+          recordStoppedAt = Date.now();
+          try { mediaRecorder.stop(); } catch (e) { finalizing = false; }
+        }
+        recordBtn.classList.remove('recording');
+        recordBtn.textContent = audioBlob ? T('recordAgain') : T('record');
+      }
+      overlay.querySelector('.ciw-audio-delete').addEventListener('click', clearAudio);
+
+      clearAudio();
+      if (!global.MediaRecorder || !(global.navigator && navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+        recordBtn.disabled = true;
+        audioStatus.textContent = global.isSecureContext === false ? T('audioInsecure') : T('audioUnsupported');
+      } else {
+        recordBtn.addEventListener('click', async function () {
+          if (isRecording()) { stopRecording(); return; }
+          if (requestingMic || finalizing) return;
+          if (recognition) { setStatus(T('stopSpeechFirst'), false); return; }
+          requestingMic = true;
+          var stream;
+          try {
+            // Mikrofonbehörighet begärs FÖRST här, vid knapptryck.
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          } catch (e) {
+            requestingMic = false;
+            if (disposed) return;
+            audioStatus.textContent = T('micDenied');
+            setStatus(T('micDeniedStatus'), false);
+            return;
+          }
+          requestingMic = false;
+          if (disposed) { stream.getTracks().forEach(function (t) { t.stop(); }); return; } // dialogen stängdes under behörighetsfrågan
+          var rec;
+          try { rec = new MediaRecorder(stream); }
+          catch (e) { stream.getTracks().forEach(function (t) { t.stop(); }); audioStatus.textContent = T('recorderFailed'); return; }
+          // Först nu, när en ny inspelning faktiskt startar, ersätts den gamla.
+          clearAudio();
+          mediaStream = stream; mediaRecorder = rec; audioChunks = [];
+          rec.ondataavailable = function (e) { if (e.data && e.data.size) audioChunks.push(e.data); };
+          rec.onerror = function () {
+            clearTimers(); stopTracks(); finalizing = false;
+            if (!disposed) { audioStatus.textContent = T('recorderError'); recordBtn.textContent = T('record'); recordBtn.classList.remove('recording'); }
+          };
+          rec.onstop = function () {
+            clearTimers(); stopTracks(); finalizing = false;
+            if (disposed || mediaRecorder !== rec) return;
+            if (!audioChunks.length) { audioStatus.textContent = T('recordingEmpty'); recordBtn.textContent = T('record'); return; }
+            var mime = rec.mimeType || 'audio/webm';
+            audioBlob = new Blob(audioChunks, { type: mime });
+            var ext = mime.indexOf('ogg') >= 0 ? 'ogg' : (mime.indexOf('mp4') >= 0 || mime.indexOf('m4a') >= 0 ? 'm4a' : 'webm');
+            audioFilename = 'issue-voice-' + new Date().toISOString().replace(/[:.]/g, '-') + '.' + ext;
+            audioDurationSec = Math.max(1, Math.round((recordStoppedAt - recordStartedAt) / 1000));
+            showAudio();
+          };
+          recordStartedAt = Date.now();
+          rec.start();
+          recordBtn.textContent = T('stopRecording'); recordBtn.classList.add('recording');
+          audioStatus.textContent = T('recording', { elapsed: '0:00', max: maxLabel });
+          recordTimer = setInterval(function () {
+            audioStatus.textContent = T('recording', { elapsed: fmtTime((Date.now() - recordStartedAt) / 1000), max: maxLabel });
+          }, 250);
+          // Hård gräns 2 min — egen timer, så att gränsen inte hänger på UI-intervallet.
+          hardStopTimer = setTimeout(stopRecording, MAX_AUDIO_SECONDS * 1000);
+        });
+      }
+
+      // Röstifyllning: Web Speech API, sv-SE, när det stöds.
+      var SpeechRecognition = global.SpeechRecognition || global.webkitSpeechRecognition;
+      var recBtn = overlay.querySelector('.ciw-rec');
+      function resetRecUi() { recBtn.classList.remove('recording'); recBtn.textContent = T('speechStart'); }
+      function stopVoice() {
+        if (recognition) { var r = recognition; recognition = null; try { r.stop(); } catch (e) { /* ignore */ } }
+        resetRecUi();
+      }
+      if (SpeechRecognition) {
+        overlay.querySelector('.ciw-speech-row').hidden = false;
+        recBtn.addEventListener('click', function () {
+          if (recognition) { stopVoice(); return; }
+          if (isRecording() || requestingMic) { setStatus(T('stopRecordingFirst'), false); return; }
+          var r = new SpeechRecognition();
+          r.lang = SPEECH_LANG;
+          r.interimResults = true;
+          r.continuous = false;
+          var base = bodyEl.value ? bodyEl.value.replace(/\s+$/, '') + ' ' : '';
+          // Alla callbacks ignoreras om r inte längre är den aktiva — annars kan sena
+          // resultat skriva in text efter skick/stängning eller nolla en nystartad session.
+          r.onresult = function (event) {
+            if (recognition !== r) return;
+            var text = '';
+            for (var i = 0; i < event.results.length; i++) text += event.results[i][0].transcript;
+            bodyEl.value = base + text;
+          };
+          r.onerror = function (event) {
+            if (recognition !== r) return;
+            recognition = null; resetRecUi();
+            setStatus(T('speechError', { error: event.error }), false);
+          };
+          r.onend = function () { if (recognition === r) { recognition = null; resetRecUi(); } };
+          recognition = r;
+          try { r.start(); recBtn.classList.add('recording'); recBtn.textContent = T('speechStop'); }
+          catch (e) { recognition = null; resetRecUi(); setStatus(T('speechFailed'), false); }
+        });
+      }
+
+      // --- Återställ ej skickat utkast ---
+      if (draft) {
+        if (projectEl.tagName === 'SELECT' && Array.prototype.some.call(projectEl.options, function (o) { return o.value === draft.project; })) projectEl.value = draft.project;
+        titleEl.value = draft.title; bodyEl.value = draft.body;
+        if (draft.audio) {
+          audioBlob = draft.audio.blob; audioFilename = draft.audio.filename; audioDurationSec = draft.audio.durationSec;
+          showAudio();
+        }
+        setStatus(T('draftRestored'), true);
+      }
+
+      // Körs vid varje stängning: släpp mikrofon, tala, lyssnare och blob-URL:er.
+      disposeOverlay = function (discard) {
+        disposed = true;
+        document.removeEventListener('keydown', onKey, true);
+        stopVoice();
+        clearTimers();
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') { try { mediaRecorder.stop(); } catch (e) { /* ignore */ } }
+        stopTracks();
+        revokeAudioUrl();
+        if (discard || sent) { draft = null; return; }
+        var hasContent = titleEl.value.trim() || bodyEl.value.trim() || audioBlob;
+        draft = hasContent ? {
+          project: projectEl.value, title: titleEl.value, body: bodyEl.value,
+          audio: audioBlob ? { blob: audioBlob, filename: audioFilename, durationSec: audioDurationSec } : null
+        } : null;
+      };
+
+      function resetForm() {
+        titleEl.value = ''; bodyEl.value = ''; clearAudio(); statusEl.textContent = '';
+      }
+      overlay.querySelector('.ciw-another').addEventListener('click', function () {
+        sent = false; doneEl.hidden = true; formEl.hidden = false; resetForm(); titleEl.focus();
+      });
+
+      sendBtn.addEventListener('click', async function () {
+        if (sendBtn.disabled) return;
+        if (isRecording()) { setStatus(T('stopBeforeSend'), false); return; }
+        if (finalizing || requestingMic) { setStatus(T('finalizing'), false); return; }
+        stopVoice(); // ingen sen taligenkänning ska skriva in text efter skick
         var audio = audioBlob ? { blob: audioBlob, filename: audioFilename, durationSec: audioDurationSec } : null;
         var payload = {
           project: String(projectEl.value || projects[0]).replace(/^#/, ''),
-          title: overlay.querySelector('#ciw-title-input').value.trim(),
+          title: titleEl.value.trim(),
           body: bodyEl.value.trim(),
           page_url: global.location ? global.location.href : '',
           user_agent: global.navigator ? global.navigator.userAgent : '',
@@ -356,32 +592,53 @@
           source: 'issue-widget/' + VERSION,
           audio: audio ? { attached: true, filename: audioFilename, mime_type: audioBlob.type || 'audio/webm', duration_sec: audioDurationSec, size_bytes: audioBlob.size } : null
         };
-        if (!payload.body && !audio) { setStatus('Skriv en beskrivning eller spela in ljud.', false); bodyEl.focus(); return; }
-        if (!payload.title) payload.title = payload.body ? payload.body.slice(0, 80) : 'Röstinspelad rapport';
+        if (!payload.body && !audio) { setStatus(T('needInput'), false); bodyEl.focus(); return; }
+        if (!payload.title) payload.title = payload.body ? titleFromBody(payload.body) : T('voiceReportTitle');
 
-        var sendBtn = overlay.querySelector('.ciw-send');
         sendBtn.disabled = true;
-        setStatus('Skickar…', true);
+        setStatus(T('sending'), true);
         try {
           var result = await sendToCodicent(payload, config, audio);
-          lastSubmitAt = Date.now();
+          sent = true; draft = null; // gäller även om dialogen hunnit stängas under skicket
           host.dispatchEvent(new CustomEvent('codicent-issue:submitted', { bubbles: true, detail: { payload: payload, result: result } }));
-          setStatus(result.demo
-            ? 'Demo-läge: ingen endpoint konfigurerad. Meddelandet loggades i konsolen i stället för att skickas.'
-            : 'Tack! Utkastet är sparat i Codicent (#issue-draft #' + payload.project + ').', true);
-          bodyEl.value = ''; overlay.querySelector('#ciw-title-input').value = ''; clearAudio();
+          if (!disposed) {
+            overlay.querySelector('.ciw-done-text').textContent = result.demo ? T('sentDemo') : T('sentOk', { project: payload.project });
+            formEl.hidden = true; doneEl.hidden = false;
+            resetForm();
+            overlay.querySelector('.ciw-another').focus();
+          }
         } catch (err) {
+          var message = err && err.name === 'AbortError' ? 'Tidsgränsen överskreds' : (err && err.message) || String(err);
           host.dispatchEvent(new CustomEvent('codicent-issue:error', { bubbles: true, detail: { error: String(err), payload: payload } }));
-          setStatus('Kunde inte skicka: ' + err.message + '. Försök igen om en stund.', false);
-        } finally { sendBtn.disabled = false; }
+          if (!disposed) setStatus(T('failed', { error: message }), false);
+        } finally { if (!disposed) sendBtn.disabled = false; }
       });
 
-      var first = panel.querySelector('#ciw-title-input');
-      if (first) first.focus();
+      titleEl.focus();
     }
 
     openBtn.addEventListener('click', open);
-    return { open: open, close: close, version: VERSION, config: config };
+
+    var widget = {
+      open: open,
+      close: function () { close(); },
+      destroy: function () {
+        if (destroyed) return;
+        close(true);
+        destroyed = true;
+        instances.delete(host);
+        if (autoCreated) host.remove(); else shell.remove();
+      },
+      version: VERSION,
+      config: config
+    };
+    instances.set(host, widget);
+    return widget;
+  }
+
+  function titleFromBody(body) {
+    var chars = Array.from(body); // kodpunkter, så att emoji inte klipps mitt i
+    return chars.length > 80 ? chars.slice(0, 80).join('').replace(/\s+$/, '') + '…' : body;
   }
 
   function escapeHtml(s) {
@@ -393,16 +650,8 @@
   // Auto-init: element <div data-codicent-issue-widget ...></div>
   function autoInit() {
     document.querySelectorAll('[data-codicent-issue-widget]').forEach(function (el) {
-      var d = el.dataset;
-      createWidget({
-        mount: el,
-        project: d.project || '',
-        projects: d.projects || '',
-        endpoint: d.endpoint || '',
-        apiKey: d.apiKey || '',
-        buttonText: d.buttonText || '',
-        allowProjectSwitch: d.allowProjectSwitch === 'true'
-      });
+      try { createWidget(Object.assign(readDataset(el), { mount: el })); }
+      catch (e) { console.error(LOG + 'Kunde inte starta widgeten:', e); }
     });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', autoInit);
