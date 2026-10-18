@@ -10,7 +10,7 @@
   pre { padding: 1rem; overflow: auto; font-size: .85rem; }
   section { border: 1px solid #e5e7eb; border-radius: 12px; padding: 1rem 1.25rem; margin: 1.5rem 0; }
   /* === CSS-anpassningsexempel 1: egna variabler på wrappern === */
-  .morkt-tema {
+  .lila-tema {
     --ciw-accent: #7c3aed;
     --ciw-button-bg: #7c3aed;
     --ciw-button-text: #ffffff;
@@ -47,7 +47,7 @@ ifyllnadshjälp — ljudfilen är det som bifogas och gäller.</p>
 &lt;script src="widget.js"&gt;&lt;/script&gt;</pre>
 </section>
 
-<section class="morkt-tema">
+<section class="lila-tema">
   <h2>2. Flera projekt + CSS-anpassning</h2>
   <p>Besökaren får en dropdown eftersom <code>allowProjectSwitch</code> är på
   och två projekt anges. Färger/radie/font styrs bara via CSS-variabler ovan.</p>
@@ -75,6 +75,21 @@ ifyllnadshjälp — ljudfilen är det som bifogas och gäller.</p>
 </section>
 
 <section>
+  <h2>4. Engelska + egen adapter (<code>lang</code>, <code>send</code>)</h2>
+  <p><code>lang: 'en'</code> byter alla texter och taligenkänningens språk;
+  <code>send</code> ersätter adaptern så att hosten slipper forka
+  <code>widget.js</code>. Här returnerar den bara ett påhittat id.</p>
+  <div id="en-mount"></div>
+  <pre>window.CodicentIssueWidget.init({
+  mount: '#en-mount',
+  project: 'nextphase',
+  lang: 'en',
+  privacyUrl: 'https://example.com/privacy',
+  send: async (payload, config, audio) =&gt; ({ ok: true, id: '…' })
+});</pre>
+</section>
+
+<section>
   <h2>Senaste skickade utkast (demo)</h2>
   <div id="log">— inget ännu —</div>
 </section>
@@ -90,10 +105,20 @@ ifyllnadshjälp — ljudfilen är det som bifogas och gäller.</p>
     demo: true,
     apiKey: '__HOST_INJECTED_ISSUE_WIDGET_KEY__' // platshållare — hosten injicerar värdet för sin #api-key-nyckel
   });
+  window.CodicentIssueWidget.init({
+    mount: '#en-mount',
+    project: 'nextphase',
+    lang: 'en',
+    privacyUrl: 'https://example.com/privacy',
+    send: async function (payload) {
+      console.info('[demo] custom send() got', payload);
+      return { ok: true, demo: true, id: 'demo-' + payload.client_id.slice(0, 8) };
+    }
+  });
   document.addEventListener('codicent-issue:submitted', function (e) {
     var a = e.detail.payload.audio;
     document.getElementById('log').textContent =
-      '#issue-draft #' + e.detail.payload.project + '\n\n' +
+      '(servern bygger #issue-draft #' + e.detail.payload.project + ' av denna payload)\n\n' +
       JSON.stringify(e.detail.payload, null, 2) +
       (a && a.attached
         ? '\n\nLjud bifogat: ' + a.filename + ' (' + a.mime_type + ', ' +

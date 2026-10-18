@@ -76,7 +76,9 @@ test.describe('kontrakt och integritet', () => {
     expect(ids[2]).not.toBe(ids[1]);
   });
 
-  test('config.send ersätter adaptern', async ({ page }) => {
+  test('config.send ersätter adaptern (och kräver varken endpoint eller demo)', async ({ page }) => {
+    const errors = [];
+    page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
     await page.evaluate(() => {
       window.__sent = [];
       window.__w = window.CodicentIssueWidget.init({
@@ -87,6 +89,7 @@ test.describe('kontrakt och integritet', () => {
     await sendText(page, 'via hook');
     await expect(q(page, '.ciw-done')).toBeVisible();
     expect(await page.evaluate(() => window.__sent)).toEqual(['via hook']);
+    expect(errors).toEqual([]);
   });
 });
 
