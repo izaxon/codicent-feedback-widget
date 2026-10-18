@@ -81,9 +81,8 @@ Implementera, i små steg med tester:
    ingen deploy, ingen kodändring. Testa att ett uppdaterat/avstängt
    meddelande omedelbart ger 401.
 2. **Spara som utkast:** Bygg meddelandet **på servern** från den validerade
-   payloaden: `#issue-draft #<projekt>
-
-<JSON>`, så det syns i befintliga vyer
+   payloaden: `#issue-draft #<projekt>`, en tom rad, sedan JSON-texten — så det syns i
+   befintliga vyer
    — ta aldrig text eller taggar från klienten. Sätt tidsstämpeln (`created_at`)
    själv. **Idempotens:** samma `client_id` (per nyckel) ger inte ett nytt
    utkast — svara med det redan skapade utkastets `{ id }`. Returnera `{ id }`. Skapa **aldrig** GitHub-issue här.
