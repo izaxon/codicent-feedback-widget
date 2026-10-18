@@ -1,16 +1,31 @@
 # Prompt till Claude MAX: backend för issue-widgeten i Codicent
 
-Kopiera allt under strecket till Claude. Widgeten (klienten) är redan
+Kopiera allt under strecket till Claude. Widgeten (klienten, v0.4.0) är redan
 byggd: den postar till en endpoint med headern
-`X-API-Key: <nyckelvärdet för #api-key-nyckeln>` och meddelandetexten
-`#issue-draft #<projekt>` + JSON
-med fälten `project, title, body, page_url, user_agent, created_at,
-source, audio`. Utan ljud: JSON som förut. **Med ljud:
-`multipart/form-data`** med fälten `project`, `tags` (JSON-sträng),
-`text`, `payload` (JSON-sträng) och filfältet **`audio`**
-(`issue-voice-<timestamp>.webm`, MIME varierar webm/ogg/m4a); payloadens
-`audio` innehåller `{attached, filename, mime_type, duration_sec,
-size_bytes}`. Ljud är valfritt och `body` kan vara tom när ljud finns.
+`X-API-Key: <nyckelvärdet för #api-key-nyckeln>`.
+
+**Kontrakt (klienten skickar bara strukturerad data — aldrig färdig
+meddelandetext eller taggar):**
+
+- Utan ljud: `application/json` med `{ "project": "<projekt>", "payload": {…} }`.
+- Med ljud: `multipart/form-data` med fälten `project`, `payload`
+  (JSON-sträng) och filfältet **`audio`** (`issue-voice-<timestamp>.webm`;
+  MIME är `audio/webm`, `audio/ogg` eller `audio/mp4` — utan codecs-parameter).
+- `payload`: `client_id` (idempotensnyckel, UUID), `project`, `title`,
+  `body`, `client_created_at` (klientens klocka — lita inte på den),
+  `source` (`issue-widget/<version>`), `audio`
+  (`null` eller `{attached, filename, mime_type, duration_sec, size_bytes}`),
+  samt valfritt `page_url` (som standard utan query/hash; kan saknas) och
+  `user_agent` (skickas normalt inte; läs `User-Agent` från requesten).
+- Ljud är valfritt och `body` kan vara tom när ljud finns. `duration_sec` är
+  klientens mätning: kontrollera längden själv och tillåt några sekunders
+  marginal (t.ex. ≤ 125 s). Webm från Chrome saknar duration-metadata.
+- Widgeten visar begripliga fel för **400/422** (avvisad), **401/403**
+  (ingen behörighet), **413** (för stort), **429** (rate limit) och **5xx**.
+  Ett lyckat svar MÅSTE vara JSON med `id` (annars räknas det som fel).
+- CORS: `X-API-Key` + `Content-Type` utlöser preflight — svara på `OPTIONS` för
+  tillåtna origins (`Access-Control-Allow-Headers: X-API-Key, Content-Type`).
+
 Ändra inte widgetens format — bygg mottagaren efter det.
 
 ---
@@ -47,7 +62,10 @@ Implementera, i små steg med tester:
    (`CryptographicOperations.FixedTimeEquals`), kräv `active: true`,
    kräv `expires_at` null eller i framtiden, och kräv att
    `allowed_projects` innehåller payloadens `project` samt att
-   `endpoint` matchar routen. Lagra aldrig klartextvärdet i
+   `endpoint` matchar routen. Eftersom nyckeln ligger i webbläsaren och därför
+   inte är hemlig: stöd ett valfritt fält `allowed_origins` i `#api-key`-meddelandet
+   (jämförs mot `Origin`-headern; tom/saknad = ingen begränsning) och rate-limita
+   även per IP, inte bara per `key_id`. Lagra aldrig klartextvärdet i
    meddelandet. Notera ärligt: dagens generiska `#api-key`-uppslag i
    `ControllerExtensions` matchar klartextfältet `api_key` — återanvänd
    gärna uppslagningen av `#api-key`-meddelanden, men hash-valideringen
@@ -62,9 +80,13 @@ Implementera, i små steg med tester:
    resp. skapa ett nytt `#api-key`-meddelande och stäng det gamla —
    ingen deploy, ingen kodändring. Testa att ett uppdaterat/avstängt
    meddelande omedelbart ger 401.
-2. **Spara som utkast:** Skapa meddelandet exakt med taggarna
-   `#issue-draft #<projekt>` och JSON-texten oförändrad, så det syns i
-   befintliga vyer. Returnera `{ id }`. Skapa **aldrig** GitHub-issue här.
+2. **Spara som utkast:** Bygg meddelandet **på servern** från den validerade
+   payloaden: `#issue-draft #<projekt>
+
+<JSON>`, så det syns i befintliga vyer
+   — ta aldrig text eller taggar från klienten. Sätt tidsstämpeln (`created_at`)
+   själv. **Idempotens:** samma `client_id` (per nyckel) ger inte ett nytt
+   utkast — svara med det redan skapade utkastets `{ id }`. Returnera `{ id }`. Skapa **aldrig** GitHub-issue här.
 2b. **Ljudbilaga + transkribering (server-side):** Om multipart-fältet
    `audio` finns: validera serverns sida (bara `audio/*` webm/ogg/m4a/mp4,
    max 2 min enligt `duration_sec` + egen kontroll där det går, max
@@ -96,7 +118,9 @@ Implementera, i små steg med tester:
    för stor/fel MIME-typ på ljud → 400/413 och inget utkast (eller utkast
    utan ljud + tydligt fel — välj ett och testa det); transkribering
    fyller textfältet och originaljudet finns kvar; text-only utan ljud
-   fungerar som förut; transform skapar exakt ett issue och andra
+   fungerar som förut; samma `client_id` två gånger ger ett enda utkast
+   (andra anropet returnerar det första `id`); extra fält som `text`/`tags`
+   i requesten ignoreras och påverkar inte taggarna; transform skapar exakt ett issue och andra
    anropet är en no-op.
 
 Håll diffen liten, ingen ny databas-tabell om meddelande+taggar räcker.
