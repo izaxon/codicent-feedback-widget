@@ -6,7 +6,10 @@
  * som #issue-draft, för granskning/transform därifrån.
  *
  * Ingen endpoint eller API-nyckel är hårdkodad här — båda kommer
- * via config från host-appen (se README.md).
+ * via config från host-appen (se README.md). Nyckeln är definierad/
+ * registrerad i Codicent som ett data-meddelande taggat #api-key
+ * (endast SHA-256-hash av värdet lagras där); widgeten får själva
+ * nyckelvärdet enbart via hostens config.
  */
 (function (global) {
   'use strict';
@@ -18,11 +21,16 @@
   // ADAPTER — byt bara här när Codicent kopplar rätt API.
   //
   // Kontrakt: ta emot (payload, config), posta till config.endpoint med
-  // config.apiKey som Bearer-token, returnera Promise<{ ok, id?, demo? }>.
+  // config.apiKey i X-API-Key-headern, returnera Promise<{ ok, id?, demo? }>.
+  // Servern validerar nyckeln mot #api-key-meddelandet/-meddelandena i
+  // hostprojektet i Codicent (hash-jämförelse, active, expires_at,
+  // allowed_projects, endpoint — se README > "API-nyckel definieras
+  // med #api-key i Codicent").
   //
   // Kandidater i Codicent (avgörs backend-sidan, widgeten ändras inte mer
   // än i den här funktionen):
-  //   a) befintligt #apidef / UpdateDataMessage-mönster
+  //   a) befintligt #apidef / CodicentApiController-mönster (X-API-Key +
+  //      SHA-256-hash, fast-tidsjämförelse)
   //   b) post_message / create_data_message med texten nedan
   // Meddelandetexten är alltid: "#issue-draft #<projekt>\n\n<JSON>"
   // ---------------------------------------------------------------------------
@@ -40,8 +48,9 @@
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        // Scoped, återkallbar nyckel. Aldrig en GitHub-nyckel. Se README > Säkerhet.
-        Authorization: 'Bearer ' + (config.apiKey || '')
+        // Värdet för nyckeln registrerad med #api-key i Codicent (endast
+        // hash lagras där). Scoped + återkallbar. Aldrig en GitHub-nyckel.
+        'X-API-Key': config.apiKey || ''
       },
       body: JSON.stringify({
         project: payload.project,
@@ -78,7 +87,7 @@
       project: d.project || d.codicentProject || '',
       projects: d.projects || '',
       endpoint: d.endpoint || '',
-      apiKey: d.apiKey || '', // i demo bara platshållare — riktig nyckel injiceras av hosten, se README
+      apiKey: d.apiKey || '', // nyckelvärdet injiceras av hosten; registrerat med #api-key i Codicent, se README
       mount: d.mount || '',
       buttonText: d.buttonText || '',
       allowProjectSwitch: d.allowProjectSwitch === 'true'

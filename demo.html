@@ -52,15 +52,17 @@ inget skickas, meddelandet loggas i webbläsarkonsolen och visas här under.</p>
 
 <section class="bara-accent">
   <h2>3. JS-config (så här sätter hosten endpoint + nyckel i praktiken)</h2>
-  <p>Nyckeln nedan är en platshållare. I produktion injicerar host-appen
-  endpoint + scoped nyckel från sin Codicent-config vid sidladdning —
+  <p>Nyckeln nedan är en platshållare. Nyckeln definieras/registreras i
+  Codicent som ett meddelande taggat <code>#api-key</code> (endast
+  SHA-256-hash av värdet lagras där). I produktion injicerar host-appen
+  endpoint + nyckelvärdet från sin hemliga config vid sidladdning —
   aldrig en riktig nyckel incheckad i frontendkoden. Se README &gt; Säkerhet.</p>
   <div id="js-config-mount"></div>
   <pre>window.CodicentIssueWidget.init({
   mount: '#js-config-mount',
   project: 'nextphase',
   endpoint: 'https://EXEMPEL.invalid/codicent/issue-drafts', // TODO: Codicents riktiga endpoint
-  apiKey: 'BYT_UT_MOT_SCOPED_NYCKEL_FRAN_CODICENT'           // scoped + återkallbar
+  apiKey: '__HOST_INJECTED_ISSUE_WIDGET_KEY__'              // värdet för nyckeln registrerad med #api-key i Codicent; scoped + återkallbar
 });</pre>
 </section>
 
@@ -77,7 +79,7 @@ inget skickas, meddelandet loggas i webbläsarkonsolen och visas här under.</p>
     // Medvetet ingen riktig endpoint här: lämna tom för demo-läge, eller
     // peka på en lokal mock, t.ex. https://httpbin.org/post för att se POSTen.
     endpoint: '',
-    apiKey: 'BYT_UT_MOT_SCOPED_NYCKEL_FRAN_CODICENT'
+    apiKey: '__HOST_INJECTED_ISSUE_WIDGET_KEY__' // platshållare — hosten injicerar värdet för sin #api-key-nyckel
   });
   document.addEventListener('codicent-issue:submitted', function (e) {
     document.getElementById('log').textContent =
