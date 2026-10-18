@@ -10,12 +10,15 @@ direkt till GitHub.
 Byggd enligt beslutad design: host-appen väljer projekt, widgeten är
 bara ett formulär + en adapter som postar till Codicent.
 
+**Live-demo (GitHub Pages):** https://izaxon.github.io/codicent-feedback-widget/
+
 ## Filer
 
 | Fil | Vad |
 | --- | --- |
 | `widget.js` | Hela widgeten. Shadow DOM, så hostens CSS varken läcker in eller ut (utom via variablerna nedan). |
 | `demo.html` | Tre embed-exempel: data-attribut, flera projekt + CSS-tema, JS-config. Körs i demo-läge utan endpoint. |
+| `index.html` | Kopia av `demo.html` så att GitHub Pages visar demon som startsida. **Håll i synk:** ändra alltid `demo.html` och kopiera sedan till `index.html` (`cp demo.html index.html`). |
 | `PROMPT-claude-max.md` | Färdig snäv prompt för backend-biten i Codicent. |
 
 ## Embedda
@@ -44,7 +47,7 @@ bara ett formulär + en adapter som postar till Codicent.
 </script>
 ```
 
-Öppna `demo.html` i en webbläsare för att testa. Utan `endpoint` är
+Öppna `demo.html` i en webbläsare för att testa, eller prova [live-demon på GitHub Pages](https://izaxon.github.io/codicent-feedback-widget/). Utan `endpoint` är
 widgeten i **demo-läge**: inget nätverksanrop görs, meddelandet loggas
 i konsolen och eventet `codicent-issue:submitted` avfyras på sidan.
 
