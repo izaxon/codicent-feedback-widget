@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codicent Issue Widget — demo</title>
+<style>
+  body { font-family: Georgia, serif; margin: 2rem auto; max-width: 760px; padding: 0 1rem; color: #1f2937; }
+  code, pre { background: #f3f4f6; border-radius: 6px; }
+  pre { padding: 1rem; overflow: auto; font-size: .85rem; }
+  section { border: 1px solid #e5e7eb; border-radius: 12px; padding: 1rem 1.25rem; margin: 1.5rem 0; }
+  /* === CSS-anpassningsexempel 1: egna variabler på wrappern === */
+  .morkt-tema {
+    --ciw-accent: #7c3aed;
+    --ciw-button-bg: #7c3aed;
+    --ciw-button-text: #ffffff;
+    --ciw-radius: 999px;          /* pill-formad knapp/panelhörn */
+    --ciw-panel-bg: #faf5ff;
+    --ciw-border: #c4b5fd;
+    --ciw-font: Georgia, serif;
+  }
+  /* === Exempel 2: ljus standard, bara accentfärg bytt === */
+  .bara-accent { --ciw-accent: #047857; --ciw-button-bg: #047857; }
+  #log { white-space: pre-wrap; font-size: .85rem; }
+</style>
+</head>
+<body>
+<h1>Codicent Issue Widget — demo</h1>
+<p>Prototyp. Utan <code>endpoint</code> kör widgeten i <strong>demo-läge</strong>:
+inget skickas, meddelandet loggas i webbläsarkonsolen och visas här under.</p>
+
+<section>
+  <h2>1. Enklaste embed (data-attribut, ett projekt)</h2>
+  <div data-codicent-issue-widget
+       data-project="nextphase"
+       data-button-text="Rapportera ett problem"></div>
+  <pre>&lt;div data-codicent-issue-widget
+     data-project="nextphase"
+     data-button-text="Rapportera ett problem"&gt;&lt;/div&gt;
+&lt;script src="widget.js"&gt;&lt;/script&gt;</pre>
+</section>
+
+<section class="morkt-tema">
+  <h2>2. Flera projekt + CSS-anpassning</h2>
+  <p>Besökaren får en dropdown eftersom <code>allowProjectSwitch</code> är på
+  och två projekt anges. Färger/radie/font styrs bara via CSS-variabler ovan.</p>
+  <div data-codicent-issue-widget
+       data-projects="nextphase,qrit"
+       data-allow-project-switch="true"
+       data-button-text="🐛 Skapa issue-utkast"></div>
+</section>
+
+<section class="bara-accent">
+  <h2>3. JS-config (så här sätter hosten endpoint + nyckel i praktiken)</h2>
+  <p>Nyckeln nedan är en platshållare. I produktion injicerar host-appen
+  endpoint + scoped nyckel från sin Codicent-config vid sidladdning —
+  aldrig en riktig nyckel incheckad i frontendkoden. Se README &gt; Säkerhet.</p>
+  <div id="js-config-mount"></div>
+  <pre>window.CodicentIssueWidget.init({
+  mount: '#js-config-mount',
+  project: 'nextphase',
+  endpoint: 'https://EXEMPEL.invalid/codicent/issue-drafts', // TODO: Codicents riktiga endpoint
+  apiKey: 'BYT_UT_MOT_SCOPED_NYCKEL_FRAN_CODICENT'           // scoped + återkallbar
+});</pre>
+</section>
+
+<section>
+  <h2>Senaste skickade utkast (demo)</h2>
+  <div id="log">— inget ännu —</div>
+</section>
+
+<script src="widget.js"></script>
+<script>
+  window.CodicentIssueWidget.init({
+    mount: '#js-config-mount',
+    project: 'nextphase',
+    // Medvetet ingen riktig endpoint här: lämna tom för demo-läge, eller
+    // peka på en lokal mock, t.ex. https://httpbin.org/post för att se POSTen.
+    endpoint: '',
+    apiKey: 'BYT_UT_MOT_SCOPED_NYCKEL_FRAN_CODICENT'
+  });
+  document.addEventListener('codicent-issue:submitted', function (e) {
+    document.getElementById('log').textContent =
+      '#issue-draft #' + e.detail.payload.project + '\n\n' +
+      JSON.stringify(e.detail.payload, null, 2);
+  });
+</script>
+</body>
+</html>
