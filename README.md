@@ -1,8 +1,9 @@
 # Codicent Issue Widget (prototyp)
 
 Liten embedbar widget i vanilla JavaScript — ingen byggkedja, inga
-ramverksberoenden. Besökare rapporterar ett problem (text eller röst,
-sv-SE) direkt från en app. Rapporten skickas som ett **meddelande till
+ramverksberoenden. Besökare rapporterar ett problem (text och/eller inspelat ljud,
+sv-SE) direkt från en app. Ljudet spelas in i webbläsaren och bifogas
+som fil — webbläsarens taligenkänning är bara en valfri ifyllnadshjälp. Rapporten skickas som ett **meddelande till
 Codicent** och sparas som utkast (`#issue-draft`). Den går **aldrig**
 direkt till GitHub.
 
@@ -175,10 +176,36 @@ t.ex. befintligt `#apidef`/`UpdateDataMessage`-mönster eller
 
 `X-API-Key: <nyckelvärdet för #api-key-nyckeln>` skickas som header (servern hashar och jämför mot `api_key_sha256`, se ovan).
 
+### Med ljud: multipart/form-data
+
+Spelar besökaren in ljud skickas i stället `multipart/form-data`
+(primärt format — base64 används inte):
+
+| Fält | Innehåll |
+| --- | --- |
+| `project` | Projekt utan `#` |
+| `tags` | JSON: `["issue-draft","<projekt>"]` |
+| `text` | Meddelandetexten ovan (`#issue-draft #<projekt>` + JSON) |
+| `payload` | Samma JSON som sträng; innehåller `audio: {attached, filename, mime_type, duration_sec, size_bytes}` |
+| `audio` | Ljudfilen, filnamn `issue-voice-<timestamp>.webm` (ändelse efter verklig MIME-typ: webm/ogg/m4a) |
+
+Anpassningar i JSON-läget: fältet `audio` är då `null` och text-only
+fungerar precis som förut. Mikrofonbehörighet begärs först när besökaren
+trycker på *Spela in ljud*; nekas den går det att skriva i stället.
+Inspelningen stoppas automatiskt vid **2 minuter**. Uppspelning och
+ta bort/spela in igen finns innan skick.
+
+**Adapter-ansvar (backend, out of scope här):** ta emot multipart,
+bifoga `audio`-filen till det skapade `#issue-draft`-meddelandet i
+Codicent, och transkribera server-side i ett senare steg som fyller i
+ett textfält (t.ex. `transcript`/`body`) — originaljudet behålls alltid
+kvar som bilaga. Widgeten sätter aldrig transkriptet som sanning.
+
 ## Flödet Codicent → GitHub-issue
 
-1. Widgeten postar utkastet → Codicent sparar meddelandet med
-   `#issue-draft #<projekt>`. Ingen GitHub-nyckel finns i klienten.
+1. Widgeten postar utkastet (eventuellt med ljudfil) → Codicent sparar
+   meddelandet med `#issue-draft #<projekt>` och ljudet som bilaga.
+   Ingen GitHub-nyckel finns i klienten.
 2. I Codicent granskas utkastet (i `/threads` eller motsvarande vy).
    Spam/dubbletter raderas, bra rapporter redigeras vid behov.
 3. Vid godkännande transformeras meddelandet till ett GitHub-issue i
@@ -209,17 +236,33 @@ här prototypen — se `PROMPT-claude-max.md`.
   det blir spam, och logga `page_url`/`user_agent` som redan skickas.
 - **Personuppgifter.** Fri text kan innehålla vad som helst. Granskaren
   i steg 2 är också PII-filtret innan något når GitHub.
-- **Röst.** Web Speech API kan skicka ljud till webbläsarleverantörens
-  tjänst (t.ex. Google i Chrome). Widgeten informerar inte automatiskt
-  om detta i alla jurisdiktioner — lägg till en notis i host-appen om
-  det krävs. Ingen ljudfil sparas av widgeten, bara transkriptet.
+- **Röst/ljud.** Den inspelade ljudfilen (MediaRecorder) skickas till
+  Codicent och **lagras där som bilaga** till `#issue-draft`-meddelandet.
+  Vilka kan lyssna: alla som har läsåtkomst till projektets
+  `#issue-draft`-meddelanden i Codicent (i praktiken granskarna/
+  projektmedlemmarna) — ingen annan, och ljudet går inte till GitHub.
+  Röst kan vara personuppgift/biometrisk: informera i host-appen.
+  *Retention (förslag, beslutas av host/projekt):* behåll ljudet tills
+  transkriptet är kontrollerat och ärendet är avgjort, radera senast
+  90 dagar efter skapande — transkript + metadata behålls, ljudet raderas.
+  Den valfria Web Speech-ifyllnaden kan däremot skicka ljud till
+  webbläsarleverantörens tjänst (t.ex. Google i Chrome); den är tydligt
+  markerad som valfri och är aldrig sanningskälla.
+- **Storleks-/tidsgräns för ljud.** Widgeten stoppar vid 2 min.
+  Backend måste också kontrollera: max 2 min, max t.ex. 5 MB, bara
+  `audio/*` (webm/ogg/m4a/mp4) — avvisa större med 400/413.
 
 ## Begränsningar i prototypen
 
-- Endast `webkitSpeechRecognition`/`SpeechRecognition` (Chrome/Edge).
-  Safari/Firefox får textfältet — formuläret fungerar likadant.
-- Ingen filuppladdning/skärmbild, ingen inloggad identitet, ingen
-  offline-kö. Medvetet utanför prototypen.
+- Ljudinspelning kräver `MediaRecorder` + `getUserMedia` (Chrome/Edge/
+  Firefox/Safari i moderna versioner, MIME-typ varierar: webm/ogg/m4a).
+  Saknas stödet fungerar textfältet likadant.
+- Den valfria tal-till-text-ifyllnaden använder
+  `webkitSpeechRecognition`/`SpeechRecognition` (Chrome/Edge).
+- Ingen skärmbild/uppladdning utöver ljud, ingen inloggad identitet,
+  ingen offline-kö. Medvetet utanför prototypen.
+- Server-side transkribering är inte byggd — backend bifogar ljudet
+  nu, transkriberar senare (se `PROMPT-claude-max.md`).
 - Endpoint-formatet (`tags`/`text`/`payload`) är ett förslag tills
   Codicent fastställer sitt API — ändra bara i `sendToCodicent`.
 
@@ -229,5 +272,7 @@ här prototypen — se `PROMPT-claude-max.md`.
 node --check widget.js   # syntaxkontroll
 ```
 
-Öppna sedan `demo.html` i Chrome: skriv/prata in en rapport, skicka,
-och kontrollera konsolen + rutan "Senaste skickade utkast".
+Öppna sedan `demo.html` i Chrome: skriv en rapport, och/eller spela in
+ljud (kolla tidsräknare, uppspelning, ta bort/spela in igen, bifogat
+filnamn i rutan), skicka, och kontrollera konsolen + rutan "Senaste
+skickade utkast". Prova också att neka mikrofonen — text ska fungera.

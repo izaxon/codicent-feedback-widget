@@ -1,5 +1,5 @@
 /*!
- * Codicent Issue Widget — prototyp 0.1.0
+ * Codicent Issue Widget — prototyp 0.2.0
  * Embedbar, vanilla JS, ingen byggkedja, inga beroenden.
  *
  * Skickar INTE till GitHub. Skickar ett meddelande till Codicent
@@ -14,14 +14,16 @@
 (function (global) {
   'use strict';
 
-  var VERSION = '0.1.0';
+  var VERSION = '0.2.0';
+  var MAX_AUDIO_SECONDS = 120; // 2 min — backend ska också kontrollera detta
   var SPEECH_LANG = 'sv-SE';
 
   // ---------------------------------------------------------------------------
   // ADAPTER — byt bara här när Codicent kopplar rätt API.
   //
-  // Kontrakt: ta emot (payload, config), posta till config.endpoint med
-  // config.apiKey i X-API-Key-headern, returnera Promise<{ ok, id?, demo? }>.
+  // Kontrakt: ta emot (payload, config, audio?), posta till config.endpoint med
+  // config.apiKey i X-API-Key-headern, returnera Promise<{ ok, id?, demo?, audio? }>.
+  // Med ljud: multipart/form-data (fält 'audio'); utan ljud: JSON.
   // Servern validerar nyckeln mot #api-key-meddelandet/-meddelandena i
   // hostprojektet i Codicent (hash-jämförelse, active, expires_at,
   // allowed_projects, endpoint — se README > "API-nyckel definieras
@@ -34,38 +36,48 @@
   //   b) post_message / create_data_message med texten nedan
   // Meddelandetexten är alltid: "#issue-draft #<projekt>\n\n<JSON>"
   // ---------------------------------------------------------------------------
-  async function sendToCodicent(payload, config) {
+  // audio (valfritt): { blob, filename, durationSec }
+  // Primärt format med ljud: multipart/form-data, fält 'audio'
+  // (filnamn issue-voice-<timestamp>.webm). Adapter-ansvar: Codicent-
+  // backend bifogar ljudet till #issue-draft-meddelandet och transkriberar
+  // server-side senare; originaljudet behålls. Utan ljud: JSON som förut.
+  async function sendToCodicent(payload, config, audio) {
     var messageText =
       '#issue-draft #' + payload.project + '\n\n' + JSON.stringify(payload, null, 2);
-
-    // Demo-läge: ingen endpoint konfigurerad. Logga istället för att skicka.
+    var audioMeta = audio ? {
+      filename: audio.filename, size: audio.blob.size,
+      mimeType: audio.blob.type || 'audio/webm', durationSec: audio.durationSec
+    } : null;
     if (!config.endpoint) {
-      console.info('[codicent-issue-widget] DEMO — skulle ha skickat:\n' + messageText);
-      return { ok: true, demo: true, messageText: messageText };
+      console.info('[codicent-issue-widget] DEMO — skulle ha skickat:\n' + messageText +
+        (audioMeta ? '\n[ljud skulle bifogas som multipart-fält "audio": ' + audioMeta.filename + ', ' + audioMeta.size + ' byte]' : ''));
+      return { ok: true, demo: true, messageText: messageText, audio: audioMeta };
     }
-
-    var response = await fetch(config.endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        // Värdet för nyckeln registrerad med #api-key i Codicent (endast
-        // hash lagras där). Scoped + återkallbar. Aldrig en GitHub-nyckel.
-        'X-API-Key': config.apiKey || ''
-      },
-      body: JSON.stringify({
-        project: payload.project,
-        tags: ['issue-draft', payload.project],
-        text: messageText,
-        payload: payload
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error('Codicent svarade ' + response.status);
+    var fetchOptions;
+    if (audio && audio.blob) {
+      var form = new FormData(); // sätt INTE Content-Type själv — webbläsaren sätter boundary
+      form.append('project', payload.project);
+      form.append('tags', JSON.stringify(['issue-draft', payload.project]));
+      form.append('text', messageText);
+      form.append('payload', JSON.stringify(payload));
+      form.append('audio', audio.blob, audio.filename);
+      fetchOptions = { method: 'POST', headers: { 'X-API-Key': config.apiKey || '' }, body: form };
+    } else {
+      fetchOptions = {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          // Värdet för nyckeln registrerad med #api-key i Codicent (endast hash lagras där).
+          'X-API-Key': config.apiKey || ''
+        },
+        body: JSON.stringify({ project: payload.project, tags: ['issue-draft', payload.project], text: messageText, payload: payload })
+      };
     }
+    var response = await fetch(config.endpoint, fetchOptions);
+    if (!response.ok) throw new Error('Codicent svarade ' + response.status);
     var data = null;
     try { data = await response.json(); } catch (e) { /* tomt svar är ok */ }
-    return { ok: true, id: data && (data.id || data.messageId), messageText: messageText };
+    return { ok: true, id: data && (data.id || data.messageId), messageText: messageText, audio: audioMeta };
   }
   // ------------------------- slut ADAPTER ------------------------------------
 
@@ -115,7 +127,9 @@
     '.ciw-hint{color:var(--ciw-muted);font-size:.82rem;margin-top:.25rem}',
     '.ciw-row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:1rem}',
     '.ciw-status{margin-top:.75rem;font-size:.9rem}.ciw-status.ok{color:#15803d}.ciw-status.err{color:#b91c1c}',
-    '.ciw-rec.recording{background:#b91c1c;color:#fff;border-color:#b91c1c}'
+    '.ciw-rec.recording,.ciw-record.recording{background:#b91c1c;color:#fff;border-color:#b91c1c}',
+    '.ciw-audio{margin-top:.5rem}.ciw-audio audio{width:100%;margin:.35rem 0}',
+    '.ciw-audio-name{font-size:.85rem;color:var(--ciw-muted);word-break:break-all}'
   ].join('');
 
   function createWidget(userConfig) {
@@ -145,9 +159,11 @@
 
     var overlay = null;
     var recognition = null;
+    var overlayCleanup = null;
     var lastSubmitAt = 0;
 
     function close() {
+      if (overlayCleanup) { try { overlayCleanup(); } catch (e) {} overlayCleanup = null; }
       stopVoice();
       if (overlay) { overlay.remove(); overlay = null; }
       openBtn.focus();
@@ -180,9 +196,17 @@
         '<div class="ciw-field"><label for="ciw-body">Beskrivning</label>' +
         '<textarea id="ciw-body" required placeholder="Vad är fel? Vad förväntade du dig?"></textarea>' +
         '<div class="ciw-hint">Sparas som utkast (#issue-draft) i Codicent och granskas innan det blir ett GitHub-issue.</div></div>' +
+        '<div class="ciw-field"><label>Ljudinspelning <span class="ciw-hint">(valfri, max 2 min)</span></label>' +
+        '<div class="ciw-row" style="margin-top:0">' +
+        '<button type="button" class="ciw-btn ciw-btn-secondary ciw-record">● Spela in ljud</button>' +
+        '<span class="ciw-hint ciw-audio-status">Inget ljud inspelat. Mikrofonen används först när du trycker på Spela in.</span></div>' +
+        '<div class="ciw-audio" hidden><audio class="ciw-audio-preview" controls></audio>' +
+        '<div class="ciw-audio-name"></div>' +
+        '<div class="ciw-row"><button type="button" class="ciw-btn ciw-btn-secondary ciw-audio-delete">Ta bort ljud / spela in igen</button></div></div>' +
+        '<div class="ciw-hint">Ljudet bifogas rapporten och sparas i Codicent, där det kan transkriberas senare. Det är ljudfilen som gäller — inte webbläsarens text.</div></div>' +
         '<div class="ciw-row">' +
-        '<button type="button" class="ciw-btn ciw-rec" hidden>🎙 Prata in</button>' +
-        '<span class="ciw-hint ciw-rec-hint" hidden>Tryck och beskriv felet på svenska.</span></div>' +
+        '<button type="button" class="ciw-btn ciw-rec" hidden>🎙 Fyll i text med röst (valfritt)</button>' +
+        '<span class="ciw-hint ciw-rec-hint" hidden>Valfri bekvämlighet: webbläsarens taligenkänning fyller i textfältet. Inte sanningskälla.</span></div>' +
         '<div class="ciw-row"><button type="button" class="ciw-btn ciw-send">Skicka som utkast</button>' +
         '<button type="button" class="ciw-btn ciw-btn-secondary ciw-cancel">Avbryt</button></div>' +
         '<div class="ciw-status" role="status" aria-live="polite"></div></div>';
@@ -196,6 +220,91 @@
       document.addEventListener('keydown', onKey);
       function onKey(e) { if (e.key === 'Escape') { document.removeEventListener('keydown', onKey); close(); } }
 
+      // --- Ljudinspelning: MediaRecorder (sanningskällan är ljudfilen) ---
+      var mediaRecorder = null, mediaStream = null, audioChunks = [];
+      var audioBlob = null, audioUrl = null, audioFilename = '', audioDurationSec = 0;
+      var recordTimer = null, recordStartedAt = 0;
+      var recordBtn = overlay.querySelector('.ciw-record');
+      var audioStatus = overlay.querySelector('.ciw-audio-status');
+      var audioBox = overlay.querySelector('.ciw-audio');
+      var audioPreview = overlay.querySelector('.ciw-audio-preview');
+      var audioName = overlay.querySelector('.ciw-audio-name');
+
+      function fmtTime(sec) {
+        sec = Math.max(0, Math.floor(sec));
+        return Math.floor(sec / 60) + ':' + ('0' + (sec % 60)).slice(-2);
+      }
+      function stopTracks() {
+        if (mediaStream) { mediaStream.getTracks().forEach(function (t) { t.stop(); }); mediaStream = null; }
+      }
+      function clearAudio() {
+        if (audioUrl) { try { URL.revokeObjectURL(audioUrl); } catch (e) {} audioUrl = null; }
+        audioBlob = null; audioFilename = ''; audioDurationSec = 0; audioChunks = [];
+        audioPreview.removeAttribute('src'); audioBox.hidden = true;
+        audioStatus.textContent = 'Inget ljud inspelat. Mikrofonen används först när du trycker på Spela in.';
+        recordBtn.textContent = '● Spela in ljud'; recordBtn.classList.remove('recording');
+      }
+      function stopRecording() {
+        if (recordTimer) { clearInterval(recordTimer); recordTimer = null; }
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') { try { mediaRecorder.stop(); } catch (e) {} }
+        recordBtn.textContent = '● Spela in ljud'; recordBtn.classList.remove('recording');
+      }
+      overlayCleanup = function () {
+        if (recordTimer) { clearInterval(recordTimer); recordTimer = null; }
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') { try { mediaRecorder.stop(); } catch (e) {} }
+        stopTracks();
+        if (audioUrl) { try { URL.revokeObjectURL(audioUrl); } catch (e) {} }
+      };
+      overlay.querySelector('.ciw-audio-delete').addEventListener('click', clearAudio);
+
+      if (!global.MediaRecorder || !(global.navigator && navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+        recordBtn.disabled = true;
+        audioStatus.textContent = 'Ljudinspelning stöds inte i den här webbläsaren — skriv i stället (eller använd valfri röstifyllning nedan).';
+      } else {
+        recordBtn.addEventListener('click', async function () {
+          if (mediaRecorder && mediaRecorder.state === 'recording') { stopRecording(); return; }
+          clearAudio(); // ny inspelning ersätter gammal
+          var stream;
+          try {
+            // Mikrofonbehörighet begärs FÖRST här, vid knapptryck.
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          } catch (e) {
+            audioStatus.textContent = 'Mikrofonen nekades eller är inte tillgänglig. Du kan skriva beskrivningen i stället.';
+            setStatus('Inget ljud spelades in — skriv i stället, det går lika bra.', false);
+            return;
+          }
+          mediaStream = stream; audioChunks = [];
+          try { mediaRecorder = new MediaRecorder(stream); }
+          catch (e) { stopTracks(); audioStatus.textContent = 'Kunde inte starta inspelningen i den här webbläsaren.'; return; }
+          mediaRecorder.ondataavailable = function (e) { if (e.data && e.data.size) audioChunks.push(e.data); };
+          mediaRecorder.onstop = function () {
+            if (recordTimer) { clearInterval(recordTimer); recordTimer = null; }
+            stopTracks();
+            if (!audioChunks.length) return;
+            var mime = (mediaRecorder && mediaRecorder.mimeType) || 'audio/webm';
+            audioBlob = new Blob(audioChunks, { type: mime });
+            var ext = mime.indexOf('ogg') >= 0 ? 'ogg' : (mime.indexOf('mp4') >= 0 || mime.indexOf('m4a') >= 0 ? 'm4a' : 'webm');
+            audioFilename = 'issue-voice-' + new Date().toISOString().replace(/[:.]/g, '-') + '.' + ext;
+            audioDurationSec = Math.min(MAX_AUDIO_SECONDS, Math.round((Date.now() - recordStartedAt) / 1000));
+            audioUrl = URL.createObjectURL(audioBlob);
+            audioPreview.src = audioUrl;
+            audioName.textContent = 'Bifogat ljud: ' + audioFilename + ' · ' + fmtTime(audioDurationSec) + ' · ' + Math.round(audioBlob.size / 1024) + ' KB — lyssna gärna innan du skickar.';
+            audioBox.hidden = false;
+            audioStatus.textContent = 'Inspelning klar (' + fmtTime(audioDurationSec) + ' / ' + fmtTime(MAX_AUDIO_SECONDS) + ').';
+            recordBtn.textContent = '● Spela in igen';
+          };
+          recordStartedAt = Date.now();
+          mediaRecorder.start();
+          recordBtn.textContent = '⏹ Stoppa inspelning'; recordBtn.classList.add('recording');
+          audioStatus.textContent = 'Spelar in… 0:00 / ' + fmtTime(MAX_AUDIO_SECONDS);
+          recordTimer = setInterval(function () {
+            var elapsed = (Date.now() - recordStartedAt) / 1000;
+            audioStatus.textContent = 'Spelar in… ' + fmtTime(elapsed) + ' / ' + fmtTime(MAX_AUDIO_SECONDS);
+            if (elapsed >= MAX_AUDIO_SECONDS) stopRecording(); // hård gräns 2 min
+          }, 250);
+        });
+      }
+
       // Röstinspelning: Web Speech API, sv-SE, när det stöds.
       var SpeechRecognition = global.SpeechRecognition || global.webkitSpeechRecognition;
       var recBtn = overlay.querySelector('.ciw-rec');
@@ -203,7 +312,7 @@
       if (SpeechRecognition) {
         recBtn.hidden = false; recHint.hidden = false;
         recBtn.addEventListener('click', function () {
-          if (recognition) { stopVoice(); recBtn.classList.remove('recording'); recBtn.textContent = '🎙 Prata in'; return; }
+          if (recognition) { stopVoice(); recBtn.classList.remove('recording'); recBtn.textContent = '🎙 Fyll i text med röst (valfritt)'; return; }
           recognition = new SpeechRecognition();
           recognition.lang = SPEECH_LANG;
           recognition.interimResults = true;
@@ -216,10 +325,10 @@
           };
           recognition.onerror = function (event) {
             setStatus('Röstinmatning misslyckades (' + event.error + '). Skriv i stället.', false);
-            recBtn.classList.remove('recording'); recBtn.textContent = '🎙 Prata in'; recognition = null;
+            recBtn.classList.remove('recording'); recBtn.textContent = '🎙 Fyll i text med röst (valfritt)'; recognition = null;
           };
           recognition.onend = function () {
-            recBtn.classList.remove('recording'); recBtn.textContent = '🎙 Prata in'; recognition = null;
+            recBtn.classList.remove('recording'); recBtn.textContent = '🎙 Fyll i text med röst (valfritt)'; recognition = null;
           };
           try { recognition.start(); recBtn.classList.add('recording'); recBtn.textContent = '⏹ Stoppa'; }
           catch (e) { setStatus('Kunde inte starta röstinmatning.', false); }
@@ -234,7 +343,9 @@
       overlay.querySelector('.ciw-send').addEventListener('click', async function () {
         var now = Date.now();
         if (now - lastSubmitAt < 10000) { setStatus('Vänta några sekunder innan du skickar igen.', false); return; }
+        if (mediaRecorder && mediaRecorder.state === 'recording') { setStatus('Stoppa inspelningen innan du skickar.', false); return; }
         var projectEl = overlay.querySelector('#ciw-project');
+        var audio = audioBlob ? { blob: audioBlob, filename: audioFilename, durationSec: audioDurationSec } : null;
         var payload = {
           project: String(projectEl.value || projects[0]).replace(/^#/, ''),
           title: overlay.querySelector('#ciw-title-input').value.trim(),
@@ -242,22 +353,23 @@
           page_url: global.location ? global.location.href : '',
           user_agent: global.navigator ? global.navigator.userAgent : '',
           created_at: new Date().toISOString(),
-          source: 'issue-widget/' + VERSION
+          source: 'issue-widget/' + VERSION,
+          audio: audio ? { attached: true, filename: audioFilename, mime_type: audioBlob.type || 'audio/webm', duration_sec: audioDurationSec, size_bytes: audioBlob.size } : null
         };
-        if (!payload.body) { setStatus('Beskrivningen får inte vara tom.', false); bodyEl.focus(); return; }
-        if (!payload.title) payload.title = payload.body.slice(0, 80);
+        if (!payload.body && !audio) { setStatus('Skriv en beskrivning eller spela in ljud.', false); bodyEl.focus(); return; }
+        if (!payload.title) payload.title = payload.body ? payload.body.slice(0, 80) : 'Röstinspelad rapport';
 
         var sendBtn = overlay.querySelector('.ciw-send');
         sendBtn.disabled = true;
         setStatus('Skickar…', true);
         try {
-          var result = await sendToCodicent(payload, config);
+          var result = await sendToCodicent(payload, config, audio);
           lastSubmitAt = Date.now();
           host.dispatchEvent(new CustomEvent('codicent-issue:submitted', { bubbles: true, detail: { payload: payload, result: result } }));
           setStatus(result.demo
             ? 'Demo-läge: ingen endpoint konfigurerad. Meddelandet loggades i konsolen i stället för att skickas.'
             : 'Tack! Utkastet är sparat i Codicent (#issue-draft #' + payload.project + ').', true);
-          bodyEl.value = ''; overlay.querySelector('#ciw-title-input').value = '';
+          bodyEl.value = ''; overlay.querySelector('#ciw-title-input').value = ''; clearAudio();
         } catch (err) {
           host.dispatchEvent(new CustomEvent('codicent-issue:error', { bubbles: true, detail: { error: String(err), payload: payload } }));
           setStatus('Kunde inte skicka: ' + err.message + '. Försök igen om en stund.', false);

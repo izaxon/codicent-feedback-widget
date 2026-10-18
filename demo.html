@@ -28,6 +28,11 @@
 <h1>Codicent Issue Widget — demo</h1>
 <p>Prototyp. Utan <code>endpoint</code> kör widgeten i <strong>demo-läge</strong>:
 inget skickas, meddelandet loggas i webbläsarkonsolen och visas här under.</p>
+<p><strong>Ljud:</strong> tryck på <em>Spela in ljud</em> i widgeten (mikrofonen
+frågas först då). Du får tidsräknare (max 2 min), uppspelning innan du skickar,
+och kan ta bort/spela in igen. Efter skick visas bifogat filnamn här under.
+Enbart text går också bra. Webbläsarens tal-till-text är bara en valfri
+ifyllnadshjälp — ljudfilen är det som bifogas och gäller.</p>
 
 <section>
   <h2>1. Enklaste embed (data-attribut, ett projekt)</h2>
@@ -82,9 +87,15 @@ inget skickas, meddelandet loggas i webbläsarkonsolen och visas här under.</p>
     apiKey: '__HOST_INJECTED_ISSUE_WIDGET_KEY__' // platshållare — hosten injicerar värdet för sin #api-key-nyckel
   });
   document.addEventListener('codicent-issue:submitted', function (e) {
+    var a = e.detail.payload.audio;
     document.getElementById('log').textContent =
       '#issue-draft #' + e.detail.payload.project + '\n\n' +
-      JSON.stringify(e.detail.payload, null, 2);
+      JSON.stringify(e.detail.payload, null, 2) +
+      (a && a.attached
+        ? '\n\nLjud bifogat: ' + a.filename + ' (' + a.mime_type + ', ' +
+          a.duration_sec + ' s, ' + a.size_bytes + ' byte)' +
+          '\nI demo-läge laddas ljudet inte upp — med endpoint skickas det som multipart-fältet "audio".'
+        : '\n\nInget ljud bifogat (textrapport).');
   });
 </script>
 </body>

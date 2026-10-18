@@ -1,11 +1,17 @@
 # Prompt till Claude MAX: backend för issue-widgeten i Codicent
 
 Kopiera allt under strecket till Claude. Widgeten (klienten) är redan
-byggd: den postar JSON till en endpoint med headern
+byggd: den postar till en endpoint med headern
 `X-API-Key: <nyckelvärdet för #api-key-nyckeln>` och meddelandetexten
 `#issue-draft #<projekt>` + JSON
 med fälten `project, title, body, page_url, user_agent, created_at,
-source`. Ändra inte widgetens format — bygg mottagaren efter det.
+source, audio`. Utan ljud: JSON som förut. **Med ljud:
+`multipart/form-data`** med fälten `project`, `tags` (JSON-sträng),
+`text`, `payload` (JSON-sträng) och filfältet **`audio`**
+(`issue-voice-<timestamp>.webm`, MIME varierar webm/ogg/m4a); payloadens
+`audio` innehåller `{attached, filename, mime_type, duration_sec,
+size_bytes}`. Ljud är valfritt och `body` kan vara tom när ljud finns.
+Ändra inte widgetens format — bygg mottagaren efter det.
 
 ---
 
@@ -59,6 +65,19 @@ Implementera, i små steg med tester:
 2. **Spara som utkast:** Skapa meddelandet exakt med taggarna
    `#issue-draft #<projekt>` och JSON-texten oförändrad, så det syns i
    befintliga vyer. Returnera `{ id }`. Skapa **aldrig** GitHub-issue här.
+2b. **Ljudbilaga + transkribering (server-side):** Om multipart-fältet
+   `audio` finns: validera serverns sida (bara `audio/*` webm/ogg/m4a/mp4,
+   max 2 min enligt `duration_sec` + egen kontroll där det går, max
+   t.ex. 5 MB → annars 400/413) och **bifoga filen till det skapade
+   `#issue-draft`-meddelandet** med befintlig bilagemekanism i Codicent —
+   bygg ingen parallell fillagring. Kör sedan (asynkront jobb är ok)
+   server-side transkribering (sv-SE) som skriver resultatet i ett
+   separat textfält på meddelandet, t.ex. `transcript` i JSON och/eller
+   `body` om body var tom — **skriv aldrig över originaljudet och radera
+   det inte**; ljudfilen förblir bilaga och sanningskälla. Markera gärna
+   `transcript_status: pending|done|failed`; vid failed behålls ljudet
+   och granskaren kan lyssna manuellt. Ljudet följer inte med till GitHub
+   vid transform — bara (granskad) text.
 3. **Transform vid godkännande:** En separat, explicit åtgärd (knapp/
    kommando i Codicent, kräver inloggad granskare) som läser ett
    `#issue-draft`-meddelande, skapar ett GitHub-issue i projektets repo
@@ -73,7 +92,12 @@ Implementera, i små steg med tester:
    `#api-key`-meddelande uppdaterats till `"active": false` → 401;
    utgången nyckel (`expires_at` passerat) → 401; otillåtet projekt →
    403; route utanför `endpoint`-fältet → 403; för lång body → 400;
-   transform skapar exakt ett issue och andra anropet är en no-op.
+   multipart med giltigt ljud → utkast skapas **med ljudet bifogat**;
+   för stor/fel MIME-typ på ljud → 400/413 och inget utkast (eller utkast
+   utan ljud + tydligt fel — välj ett och testa det); transkribering
+   fyller textfältet och originaljudet finns kvar; text-only utan ljud
+   fungerar som förut; transform skapar exakt ett issue och andra
+   anropet är en no-op.
 
 Håll diffen liten, ingen ny databas-tabell om meddelande+taggar räcker.
 Merga ingenting och deploya ingenting — öppna en PR och sammanfatta.
