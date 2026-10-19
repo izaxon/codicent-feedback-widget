@@ -399,7 +399,7 @@
     openBtn.textContent = config.buttonText || T('openButton');
     root.appendChild(openBtn);
 
-    if (!config.endpoint && config.demo !== true) {
+    if (!config.endpoint && config.demo !== true && typeof config.send !== 'function') {
       console.error(LOG + 'Ingen endpoint konfigurerad. Sätt endpoint, eller demo: true för att prova utan nätverk.');
     }
 
