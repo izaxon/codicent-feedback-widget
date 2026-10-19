@@ -26,7 +26,7 @@
 </head>
 <body>
 <h1>Codicent Issue Widget — demo</h1>
-<p>Prototyp. Utan <code>endpoint</code> kör widgeten i <strong>demo-läge</strong>:
+<p>Prototyp. Med <code>demo: true</code> (och utan <code>endpoint</code>) kör widgeten i <strong>demo-läge</strong>:
 inget skickas, meddelandet loggas i webbläsarkonsolen och visas här under.</p>
 <p><strong>Ljud:</strong> tryck på <em>Spela in ljud</em> i widgeten (mikrofonen
 frågas först då). Du får tidsräknare (max 2 min), uppspelning innan du skickar,
@@ -38,9 +38,11 @@ ifyllnadshjälp — ljudfilen är det som bifogas och gäller.</p>
   <h2>1. Enklaste embed (data-attribut, ett projekt)</h2>
   <div data-codicent-issue-widget
        data-project="nextphase"
+       data-demo="true"
        data-button-text="Rapportera ett problem"></div>
   <pre>&lt;div data-codicent-issue-widget
      data-project="nextphase"
+     data-demo="true"   &lt;!-- bara för demo: utan endpoint skickas inget --&gt;
      data-button-text="Rapportera ett problem"&gt;&lt;/div&gt;
 &lt;script src="widget.js"&gt;&lt;/script&gt;</pre>
 </section>
@@ -52,6 +54,7 @@ ifyllnadshjälp — ljudfilen är det som bifogas och gäller.</p>
   <div data-codicent-issue-widget
        data-projects="nextphase,qrit"
        data-allow-project-switch="true"
+       data-demo="true"
        data-button-text="🐛 Skapa issue-utkast"></div>
 </section>
 
@@ -81,9 +84,10 @@ ifyllnadshjälp — ljudfilen är det som bifogas och gäller.</p>
   window.CodicentIssueWidget.init({
     mount: '#js-config-mount',
     project: 'nextphase',
-    // Medvetet ingen riktig endpoint här: lämna tom för demo-läge, eller
-    // peka på en lokal mock, t.ex. https://httpbin.org/post för att se POSTen.
-    endpoint: '',
+    // Medvetet ingen riktig endpoint här: demo: true = inget nätverksanrop.
+    // Utan demo: true och utan endpoint vägrar widgeten skicka (så att en
+    // trasig produktionskonfiguration aldrig ser ut som ett lyckat skick).
+    demo: true,
     apiKey: '__HOST_INJECTED_ISSUE_WIDGET_KEY__' // platshållare — hosten injicerar värdet för sin #api-key-nyckel
   });
   document.addEventListener('codicent-issue:submitted', function (e) {
